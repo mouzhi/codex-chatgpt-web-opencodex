@@ -179,7 +179,7 @@ test("Zero Risk is selectable during onboarding and later switches transactional
   );
   const modeTransaction = modeSwitchHandler.indexOf("await browserHost.withInteractionModeChange(");
   const runtimeModeCommit = modeSwitchHandler.indexOf("runtimeHost.setBrowserInteractionMode(mode)");
-  const stateModeCommit = modeSwitchHandler.indexOf("const state = stateStore.update({");
+  const stateModeCommit = modeSwitchHandler.indexOf("const state = stateStore.update(codexRouteStatePatch({");
   assert.ok(modeTransaction >= 0 && modeTransaction < runtimeModeCommit);
   assert.ok(runtimeModeCommit < stateModeCommit);
 
@@ -189,7 +189,7 @@ test("Zero Risk is selectable during onboarding and later switches transactional
   );
   const runtimeMcpCommit = mcpSetupHandler.indexOf("const runSetup = () => setup({");
   const mcpTransaction = mcpSetupHandler.indexOf("await browserHost.withInteractionModeChange(interactionMode, runSetup)");
-  const stateMcpCommit = mcpSetupHandler.indexOf("const state = stateStore.update({");
+  const stateMcpCommit = mcpSetupHandler.indexOf("const state = stateStore.update(codexRouteStatePatch({");
   assert.ok(runtimeMcpCommit >= 0 && runtimeMcpCommit < mcpTransaction);
   assert.ok(mcpTransaction < stateMcpCommit);
   assert.match(browserHostSource, /bindManualTurnContents\(tab\)/);

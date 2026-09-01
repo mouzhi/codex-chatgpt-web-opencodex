@@ -1,6 +1,11 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { AppConfig } from "./config";
-import { getConfigDir, getConfigPath, loadConfig } from "./config";
+import {
+  getConfigDir,
+  getConfigPath,
+  loadConfig,
+  OPENCODEX_PROVIDER_CONFIG_PURPOSE,
+} from "./config";
 import { join } from "node:path";
 import { inspectCodexIntegration } from "./codex-integration";
 import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-login";
@@ -27,6 +32,14 @@ export interface DoctorReport {
   ok: boolean;
   mode?: AppConfig["mode"];
   checks: DoctorCheck[];
+}
+
+export interface DoctorOptions {
+  /**
+   * Skip native Codex route checks for an explicitly selected provider runtime. The persisted
+   * configuration purpose is also inferred automatically, so callers normally need no option.
+   */
+  providerOnly?: boolean;
 }
 
 function secureFile(path: string): boolean {
@@ -97,7 +110,7 @@ async function proxyCheck(config: AppConfig): Promise<DoctorCheck> {
   }
 }
 
-export async function runDoctor(): Promise<DoctorReport> {
+export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
   let config: AppConfig;
   try {
@@ -148,13 +161,23 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   }
 
-  const codex = inspectCodexIntegration();
-  if (!codex.installed) {
-    checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
-  } else if (codex.errors.length > 0) {
-    checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });
+  const providerOnly = options.providerOnly === true
+    || config.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE;
+  if (providerOnly) {
+    checks.push({
+      id: "codex",
+      status: "ok",
+      message: "OpenCodex provider mode does not manage the native Codex route",
+    });
   } else {
-    checks.push({ id: "codex", status: "ok", message: "Codex native model route is installed" });
+    const codex = inspectCodexIntegration();
+    if (!codex.installed) {
+      checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
+    } else if (codex.errors.length > 0) {
+      checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });
+    } else {
+      checks.push({ id: "codex", status: "ok", message: "Codex native model route is installed" });
+    }
   }
 
   const service = getServiceStatus();

@@ -15,6 +15,10 @@ const {
 const { embeddedRuntimeInvocation, runtimeInvocation } = require("./runtime-command.cjs");
 const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, terminateOwnedProcessTree } = require("./process-tree.cjs");
+const {
+  OPENCODEX_PROVIDER_RUNTIME_HOST,
+  OPENCODEX_PROVIDER_RUNTIME_PORT,
+} = require("./profile.cjs");
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_RUNTIME_LOG_LINE_CHARS = 64 * 1024;
@@ -139,6 +143,20 @@ function parseBridgeRouteResult(stdout, { expectedActive, requireInstalled = fal
   return result;
 }
 
+function assertProviderRuntimeEndpoint(config) {
+  if (!config) return config;
+  if (config.host !== OPENCODEX_PROVIDER_RUNTIME_HOST || config.port !== OPENCODEX_PROVIDER_RUNTIME_PORT) {
+    throw new Error(
+      `OpenCodex provider runtime must listen on ${OPENCODEX_PROVIDER_RUNTIME_HOST}:${OPENCODEX_PROVIDER_RUNTIME_PORT}`,
+    );
+  }
+  return config;
+}
+
+function providerSetupFlags(providerOnly) {
+  return providerOnly ? ["--provider-only", "--port", String(OPENCODEX_PROVIDER_RUNTIME_PORT)] : [];
+}
+
 class RuntimeHost {
   constructor({
     app,
@@ -150,6 +168,7 @@ class RuntimeHost {
     coreHome,
     codexHome,
     launcherProfile = "production",
+    providerOnly = false,
     launchAgentsDir,
     platform = process.platform,
     publishOperation,
@@ -165,7 +184,11 @@ class RuntimeHost {
     if (launcherProfile !== "production" && launcherProfile !== "development") {
       throw new Error("Runtime host launcher profile is invalid");
     }
+    if (providerOnly && launcherProfile !== "production") {
+      throw new Error("OpenCodex provider runtime requires the production launcher profile");
+    }
     this.launcherProfile = launcherProfile;
+    this.providerOnly = providerOnly === true;
     this.coreHome = coreHome ? resolveUserPath(coreHome) : null;
     if (launcherProfile === "development" && !this.coreHome) {
       throw new Error("Runtime host DEV profile requires its isolated home");
@@ -207,6 +230,9 @@ class RuntimeHost {
     const mode = this.getBrowserInteractionMode();
     if (mode !== "automatic" && mode !== "manual") {
       throw new Error("Launcher browser interaction mode is invalid");
+    }
+    if (this.providerOnly && mode !== "automatic") {
+      throw new Error("OpenCodex provider runtime requires automatic browser interaction");
     }
     return mode;
   }
@@ -411,6 +437,7 @@ class RuntimeHost {
     }
     const launcherOwned = setupConfig.browserHost === "launcher";
     const config = launcherOwned ? this.supervisor.readConfig() : setupConfig;
+    if (this.providerOnly) assertProviderRuntimeEndpoint(config);
     return {
       configured: true,
       owner: launcherOwned ? "launcher" : "external",
@@ -726,7 +753,7 @@ class RuntimeHost {
   async doctor() {
     this.assertProductionProfile("Runtime doctor");
     try {
-      const result = await this.run("doctor", ["doctor", "--json"], {
+      const result = await this.run("doctor", ["doctor", "--json", ...(this.providerOnly ? ["--provider-only"] : [])], {
         message: "Checking runtime",
         timeoutMs: 75_000,
         acceptedExitCodes: [0, 1],
@@ -976,6 +1003,9 @@ class RuntimeHost {
     const interactionMode = existing.configured
       ? existing.config?.browserInteractionMode ?? this.browserInteractionMode()
       : this.browserInteractionMode();
+    if (this.providerOnly && interactionMode !== "automatic") {
+      throw new Error("OpenCodex provider runtime requires automatic browser interaction");
+    }
     if (!existing.configured && interactionMode === "manual") {
       throw new Error("Zero Risk must be installed through MCP setup because tunnel credentials are required");
     }
@@ -988,14 +1018,15 @@ class RuntimeHost {
         mode: interactionMode,
         refreshCapabilities: interactionMode === "automatic",
       }),
-      "--replace-codex-route",
+      ...providerSetupFlags(this.providerOnly),
       "--acknowledge-unofficial",
       "--restart-service",
     ];
     if (mode === "full") args.push("--app-name", this.setupConnectorName());
+    if (!this.providerOnly) args.splice(args.indexOf("--acknowledge-unofficial"), 0, "--replace-codex-route");
     const result = await this.runSetup("core-setup", args, {
-      message: "Installing ChatGPT Web models into Codex",
-      successMessage: "Codex integration installed",
+      message: this.providerOnly ? "Configuring the OpenCodex provider runtime" : "Installing ChatGPT Web models into Codex",
+      successMessage: this.providerOnly ? "OpenCodex provider runtime configured" : "Codex integration installed",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
     });
     return { ...result, mode };
@@ -1065,22 +1096,28 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       ...this.browserInteractionArgs(),
-      "--replace-codex-route",
+      ...providerSetupFlags(this.providerOnly),
       "--acknowledge-unofficial",
       "--restart-service",
       contextFlag,
     ];
+    if (!this.providerOnly) args.splice(args.indexOf("--acknowledge-unofficial"), 0, "--replace-codex-route");
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
     if (mode === "full") args.push("--app-name", this.setupConnectorName());
     const result = await this.runSetup("bigger-context", args, {
       message: enabled ? "Enabling Bigger Context" : "Disabling Bigger Context",
-      successMessage: enabled ? "Bigger Context enabled; restart Codex" : "Standard context restored; restart Codex",
+      successMessage: this.providerOnly
+        ? enabled ? "Bigger Context enabled" : "Standard context restored"
+        : enabled ? "Bigger Context enabled; restart Codex" : "Standard context restored; restart Codex",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
     });
     return { ...result, mode, enabled: enabled === true };
   }
 
   async setZeroRiskPro(enabled) {
+    if (this.providerOnly) {
+      throw new Error("Zero Risk manual interaction is unavailable in the OpenCodex provider launcher");
+    }
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {
       throw new Error("Install the Codex integration before changing Zero Risk model profiles");
@@ -1124,7 +1161,9 @@ class RuntimeHost {
     const connectorMigrationRequired = existing.mode === "full"
       && isLegacyConnectorName(validateConnectorName(existing.config?.appName));
     const interactionMode = existing.config?.browserInteractionMode ?? "automatic";
-    const expectedTunnelProfile = interactionMode === "manual"
+    const expectedTunnelProfile = this.providerOnly
+      ? "codex-chatgpt-web-opencodex"
+      : interactionMode === "manual"
       ? "codex-chatgpt-web-zero-risk"
       : "codex-chatgpt-web";
     const expectedKeyFile = interactionMode === "manual"
@@ -1152,7 +1191,8 @@ class RuntimeHost {
       existing.mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
-      ...this.browserInteractionArgs(),
+      ...this.browserInteractionArgs({ mode: this.providerOnly ? "automatic" : interactionMode }),
+      ...providerSetupFlags(this.providerOnly),
       "--acknowledge-unofficial",
       "--restart-service",
     ];
@@ -1163,7 +1203,9 @@ class RuntimeHost {
       message: tunnelProfileMigrationRequired
         ? `Separating ${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP credentials`
         : `Upgrading launcher runtime from ${existing.config.releaseVersion} to ${currentVersion}`,
-      successMessage: tunnelProfileMigrationRequired
+      successMessage: this.providerOnly
+        ? `OpenCodex provider runtime upgraded to ${currentVersion}`
+        : tunnelProfileMigrationRequired
         ? `${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP profile migrated`
         : `Launcher runtime upgraded to ${currentVersion}`,
       timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
@@ -1182,6 +1224,9 @@ class RuntimeHost {
     this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const targetMode = interactionMode ?? this.browserInteractionMode();
+    if (this.providerOnly && targetMode !== "automatic") {
+      throw new Error("OpenCodex provider MCP setup requires automatic browser interaction");
+    }
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured(targetMode);
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
@@ -1197,13 +1242,16 @@ class RuntimeHost {
       ...this.browserInteractionArgs({ mode: targetMode }),
       "--app-name",
       this.setupConnectorName(),
-      "--replace-codex-route",
+      ...providerSetupFlags(this.providerOnly),
     ];
+    if (!this.providerOnly) args.push("--replace-codex-route");
     if (reuseSavedCredentials) {
       args.push("--acknowledge-unofficial", "--restart-service");
       return this.runSetup("mcp-setup", args, {
-        message: "Reconnecting the native Codex harness with saved tunnel credentials",
-        successMessage: "Local MCP tools are ready",
+        message: this.providerOnly
+          ? "Reconnecting the OpenCodex provider MCP runtime with saved tunnel credentials"
+          : "Reconnecting the native Codex harness with saved tunnel credentials",
+        successMessage: this.providerOnly ? "OpenCodex provider MCP tools are ready" : "Local MCP tools are ready",
         timeoutMs: MCP_SETUP_TIMEOUT_MS,
       });
     }
@@ -1221,8 +1269,8 @@ class RuntimeHost {
       "--restart-service",
     );
     return this.runSetup("mcp-setup", args, {
-      message: "Connecting the native Codex harness",
-      successMessage: "Local MCP tools are ready",
+      message: this.providerOnly ? "Connecting the OpenCodex provider MCP runtime" : "Connecting the native Codex harness",
+      successMessage: this.providerOnly ? "OpenCodex provider MCP tools are ready" : "Local MCP tools are ready",
       timeoutMs: MCP_SETUP_TIMEOUT_MS,
     }).finally(() => fs.rmSync(keyPath, { force: true }));
   }
@@ -1275,6 +1323,9 @@ class RuntimeHost {
     if (mode !== "automatic" && mode !== "manual") {
       throw new Error("Browser interaction mode must be automatic or manual");
     }
+    if (this.providerOnly && mode !== "automatic") {
+      throw new Error("OpenCodex provider launcher keeps browser interaction automatic");
+    }
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {
       throw new Error("Install the Codex integration before changing browser interaction mode");
@@ -1289,13 +1340,16 @@ class RuntimeHost {
       this.browserDescriptorPath,
       ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),
       "--acknowledge-unofficial",
-      ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
+      ...(this.launcherProfile === "production" ? [...providerSetupFlags(this.providerOnly), "--restart-service"] : []),
       mode === "automatic" && current.config?.experimentalBiggerContext === true
         ? "--bigger-context"
         : "--standard-context",
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
     if (current.mode === "full") args.push("--app-name", this.setupConnectorName());
+    if (this.launcherProfile === "production" && !this.providerOnly) {
+      args.splice(args.indexOf("--acknowledge-unofficial"), 0, "--replace-codex-route");
+    }
     const options = {
       message: mode === "manual"
         ? "Enabling Zero Risk"

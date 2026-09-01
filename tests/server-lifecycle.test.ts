@@ -699,6 +699,28 @@ test("health proves that Codex received a successful augmented model catalog", a
   }
 });
 
+test("provider-only health identifies the endpoint owner", async () => {
+  const config = {
+    ...defaultConfig("browser-only"),
+    purpose: "opencodex-provider" as const,
+    browserHost: "launcher" as const,
+    browserHostDescriptorPath: join(tmpdir(), "provider-launcher-browser.json"),
+    port: 0,
+  };
+  // The unit server uses an ephemeral port; the persisted config parser separately enforces 17841.
+  const server = startServer(config);
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    expect(await (await fetch(`${endpoint}/healthz`)).json()).toMatchObject({
+      service: "codex-chatgpt-web",
+      purpose: "opencodex-provider",
+      mode: "browser-only",
+    });
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("server exposes authenticated standalone Web Search on the routed v1 base URL", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   let upstreamRequest: Request | undefined;

@@ -9,6 +9,7 @@ import {
   defaultConfig,
   getConfigPath,
   loadConfigForSetup,
+  OPENCODEX_PROVIDER_CONFIG_PURPOSE,
   resolveInteractionConnectorIdentities,
   resolveDevSetupConnectorName,
   saveConfig,
@@ -43,8 +44,14 @@ import { connectTunnel, createTunnelConfig, installRuntimeKey, installRuntimeKey
 import { getTunnelServiceStatus, installTunnelService, restartTunnelService, stopTunnelService, tunnelServiceDefinitionMatches, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
 
+const PROVIDER_RUNTIME_HOST = "127.0.0.1" as const;
+const PROVIDER_RUNTIME_PORT = 17_841 as const;
+const PROVIDER_TUNNEL_NAME = "codex-chatgpt-web-opencodex" as const;
+
 export interface SetupOptions {
   mode: RuntimeMode;
+  /** Configure the isolated OpenCodex provider without installing a native Codex route. */
+  providerOnly?: boolean;
   browserInteractionMode?: BrowserInteractionMode;
   subagentProtocol?: SubagentProtocol;
   port?: number;
@@ -70,7 +77,7 @@ export interface SetupResult {
   loginCreated: boolean;
   serviceLoaded: boolean;
   tunnelReady: boolean | null;
-  codexRestartRequired: true;
+  codexRestartRequired: boolean;
   connectorSetupRequired: boolean;
 }
 
@@ -125,6 +132,7 @@ function loadExistingConfig(): AppConfig | undefined {
 
 function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
   return JSON.stringify({
+    purpose: before.purpose,
     mode: before.mode,
     subagentProtocol: before.subagentProtocol,
     releaseVersion: before.releaseVersion,
@@ -152,6 +160,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     automaticTunnel: before.automaticTunnel,
     manualTunnel: before.manualTunnel,
   }) !== JSON.stringify({
+    purpose: after.purpose,
     mode: after.mode,
     subagentProtocol: after.subagentProtocol,
     releaseVersion: after.releaseVersion,
@@ -240,6 +249,12 @@ async function waitForProxy(config: AppConfig, timeoutMs = 10_000): Promise<void
 function baseConfig(existing: AppConfig | undefined, options: SetupOptions): AppConfig {
   const config = existing ? structuredClone(existing) : defaultConfig(options.mode);
   config.mode = options.mode;
+  if (options.providerOnly) {
+    if (options.browserInteractionMode === "manual") {
+      throw new Error("Provider-only setup requires automatic browser interaction");
+    }
+    config.browserInteractionMode = "automatic";
+  }
   if (options.browserInteractionMode) config.browserInteractionMode = options.browserInteractionMode;
   Object.assign(config, resolveInteractionConnectorIdentities(
     existing,
@@ -251,6 +266,9 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   config.runtimeCommand = currentRuntimeCommand();
   if (options.port !== undefined) {
     if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw new Error("--port must be an integer from 1 to 65535");
+    if (options.providerOnly && options.port !== PROVIDER_RUNTIME_PORT) {
+      throw new Error(`--provider-only requires --port ${PROVIDER_RUNTIME_PORT}`);
+    }
     config.port = options.port;
   }
   if (options.chromeExecutablePath) config.chromeExecutablePath = options.chromeExecutablePath;
@@ -293,6 +311,13 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
   if (!config.acknowledgedUnofficialAt) {
     throw new Error("Setup requires explicit acknowledgement that this is unofficial browser automation. Pass --acknowledge-unofficial.");
+  }
+  if (options.providerOnly) {
+    if (config.host !== PROVIDER_RUNTIME_HOST) {
+      throw new Error(`OpenCodex provider setup must bind to ${PROVIDER_RUNTIME_HOST}`);
+    }
+    config.host = PROVIDER_RUNTIME_HOST;
+    config.port = PROVIDER_RUNTIME_PORT;
   }
   return config;
 }
@@ -353,7 +378,9 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
     throw new Error(`${interactionMode === "manual" ? "Zero Risk" : "Automatic"} mode requires its own runtime key`);
   }
   const installedBinary = await installTunnelClient();
-  const productionProfileName = interactionMode === "manual"
+  const productionProfileName = config.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
+    ? PROVIDER_TUNNEL_NAME
+    : interactionMode === "manual"
     ? "codex-chatgpt-web-zero-risk"
     : "codex-chatgpt-web";
   const profileName = config.purpose === DEV_CONFIG_PURPOSE
@@ -406,16 +433,38 @@ async function bootstrapTunnelProfile(config: AppConfig): Promise<void> {
 
 function prepareSetup(options: SetupOptions): PreparedSetup {
   const existing = loadExistingConfig();
+  const providerOnly = options.providerOnly === true;
   if (existing?.purpose === DEV_CONFIG_PURPOSE) {
     throw new Error("A DEV harness configuration cannot be installed into Codex");
+  }
+  if (providerOnly) {
+    if (existing?.purpose !== undefined && existing.purpose !== OPENCODEX_PROVIDER_CONFIG_PURPOSE) {
+      throw new Error("Provider-only setup cannot repurpose a non-provider configuration");
+    }
+    if (existing && existing.purpose === undefined
+      && (existing.host !== PROVIDER_RUNTIME_HOST
+        || existing.port !== PROVIDER_RUNTIME_PORT
+        || existing.browserHost !== "launcher")) {
+      throw new Error(
+        `Provider-only setup can adopt an existing production configuration only at ${PROVIDER_RUNTIME_HOST}:${PROVIDER_RUNTIME_PORT} with the launcher browser host`,
+      );
+    }
+  } else if (existing?.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE) {
+    throw new Error("A provider-only configuration cannot be installed into Codex; rerun with --provider-only");
   }
   const config = baseConfig(existing, {
     ...options,
     subagentProtocol: options.subagentProtocol
-      ?? readCodexSubagentProtocol(existing?.subagentProtocol ?? "compatibility-v1"),
+      ?? (providerOnly
+        ? existing?.subagentProtocol ?? "compatibility-v1"
+        : readCodexSubagentProtocol(existing?.subagentProtocol ?? "compatibility-v1")),
   });
-  delete config.purpose;
+  if (providerOnly) config.purpose = OPENCODEX_PROVIDER_CONFIG_PURPOSE;
+  else delete config.purpose;
   const launcherOwned = config.browserHost === "launcher";
+  if (providerOnly && !launcherOwned) {
+    throw new Error("Provider-only setup requires the production launcher browser host; pass --browser-host-descriptor");
+  }
   if (!launcherOwned && process.platform !== "darwin") {
     throw new Error(
       "Terminal-only managed Chrome setup currently requires macOS. "
@@ -458,16 +507,21 @@ export function preflightSetup(options: SetupOptions): void {
       throw new Error("Automatic and Zero Risk require different Tunnel IDs and separate ChatGPT connectors");
     }
   }
-  preflightCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  if (!options.providerOnly) {
+    preflightCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
 }
 
 export async function setup(options: SetupOptions): Promise<SetupResult> {
   const { existing, config, launcherOwned } = prepareSetup(options);
-  preflightCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  const providerOnly = options.providerOnly === true;
+  if (!providerOnly) {
+    preflightCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
   const refreshTunnelWorker = tunnelWorkerRuntimeChanged(existing, config);
   if (existing && options.restartService) config.controlToken = randomBytes(32).toString("base64url");
   const beforeService = getServiceStatus();
@@ -601,9 +655,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     launcherOwned && existing && existing.browserHost !== "launcher",
   );
   if (!migratingTerminalRuntime) removeLegacyRuntimeArtifacts(config);
-  installCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  if (!providerOnly) {
+    installCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
 
   return {
     mode: config.mode,
@@ -611,7 +667,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     loginCreated,
     serviceLoaded: launcherOwned ? false : getServiceStatus().loaded,
     tunnelReady,
-    codexRestartRequired: true,
+    codexRestartRequired: !providerOnly,
     connectorSetupRequired: config.mode === "full",
   };
 }

@@ -11,12 +11,12 @@ import { chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-err
 import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE } from "./adapters/chatgpt-web/environment";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
-import { providerConfig } from "./config";
+import { OPENCODEX_PROVIDER_CONFIG_PURPOSE, providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
 import { createHash } from "node:crypto";
-import { augmentNativeModelCatalog } from "./model-catalog";
+import { augmentNativeModelCatalog, buildProviderOnlyModelCatalog } from "./model-catalog";
 import {
   readCodexModelContextOverride,
   readCodexSubagentProtocol,
@@ -277,6 +277,26 @@ export class HttpTurnCounter {
 
 type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
 
+function isProviderOnlyConfig(config: AppConfig): boolean {
+  return config.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE;
+}
+
+function providerOnlyUnsupportedModelResponse(model: string): Response {
+  return formatErrorResponse(
+    404,
+    "model_not_found",
+    `OpenCodex provider only supports ChatGPT Web models; model ${JSON.stringify(model)} is not available`,
+  );
+}
+
+function providerOnlySearchResponse(): Response {
+  return formatErrorResponse(
+    404,
+    "not_found",
+    "OpenCodex provider does not expose the native Web Search endpoint",
+  );
+}
+
 export interface ResponseRequestOptions {
   /** DEV and other in-process harnesses can keep continuation state in their own canonical store. */
   rememberState?: boolean;
@@ -301,6 +321,14 @@ export async function modelsRequest(
   fetchUpstream?: NativeFetch,
   contextOverride?: () => CodexModelContextOverride | undefined,
 ): Promise<Response> {
+  if (isProviderOnlyConfig(config)) {
+    // OpenCodex owns this provider's model namespace.  Never ask the official Codex backend for a
+    // native catalog (or forward an incoming Bearer token) in provider-only mode.
+    const body = JSON.stringify(buildProviderOnlyModelCatalog(config));
+    const headers = new Headers({ "content-type": "application/json" });
+    headers.set("etag", `W/\"${createHash("sha256").update(body).digest("base64url")}\"`);
+    return new Response(body, { status: 200, headers });
+  }
   let upstream: Response;
   try {
     upstream = await forwardNativeCodexRequest(req, "models", fetchUpstream);
@@ -326,7 +354,9 @@ export async function modelsRequest(
 export async function nativeSearchRequest(
   req: Request,
   fetchUpstream?: NativeFetch,
+  config?: AppConfig,
 ): Promise<Response> {
+  if (config && isProviderOnlyConfig(config)) return providerOnlySearchResponse();
   try {
     return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream);
   } catch (error) {
@@ -371,6 +401,7 @@ export async function responseRequest(
     ? (raw as { model?: unknown }).model
     : undefined;
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
+    if (isProviderOnlyConfig(config)) return providerOnlyUnsupportedModelResponse(requestedModel);
     try {
       return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
     } catch (error) {
@@ -566,6 +597,7 @@ export async function compactRequest(
     return formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
   }
   if (!isChatGptWebModelSlug(raw.model)) {
+    if (isProviderOnlyConfig(config)) return providerOnlyUnsupportedModelResponse(raw.model);
     try {
       return await forwardNativeCodexRequest(nativeRequest, "responses/compact", undefined, raw);
     } catch (error) {
@@ -678,6 +710,7 @@ export function startServer(
           status: "ok",
           service: "codex-chatgpt-web",
           version: VERSION,
+          purpose: config.purpose ?? null,
           mode: config.mode,
           pid: process.pid,
           port: config.port,
@@ -823,8 +856,9 @@ export function startServer(
       }
       if (req.method === "POST" && url.pathname === "/v1/alpha/search") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (isProviderOnlyConfig(config)) return providerOnlySearchResponse();
         return httpTurns.track(
-          signal => nativeSearchRequest(new Request(req, { signal }), dependencies.fetchUpstream),
+          signal => nativeSearchRequest(new Request(req, { signal }), dependencies.fetchUpstream, config),
           req.signal,
           process.platform,
           "search",

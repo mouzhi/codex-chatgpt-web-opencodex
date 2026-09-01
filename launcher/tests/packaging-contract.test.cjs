@@ -9,6 +9,7 @@ const launcherRoot = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(launcherRoot, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(launcherRoot, "package.json"), "utf8"));
 const repositoryManifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+const packager = require(path.join(launcherRoot, "scripts", "package.cjs"));
 
 test("the public launcher command uses the Electron bootstrap", () => {
   assert.equal(repositoryManifest.scripts.launcher, "bun run scripts/start-launcher.ts");
@@ -45,6 +46,50 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.match(manifest.build.nsis.guid, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
 });
 
+test("OpenCodex Windows packaging uses an isolated identity and forced provider entrypoint", () => {
+  assert.equal(
+    manifest.scripts["package:win:opencodex"],
+    "bun run build && bun run build:runtime && bun run scripts/package.cjs --win --opencodex-provider",
+  );
+  assert.deepEqual(packager.parsePackagingArgs(["--win", "--opencodex-provider"], "win32"), {
+    openCodexProvider: true,
+    requested: "--win",
+    target: "--win",
+  });
+  assert.deepEqual(packager.parsePackagingArgs(["--opencodex-provider"], "win32"), {
+    openCodexProvider: true,
+    requested: undefined,
+    target: "--win",
+  });
+  assert.deepEqual(packager.builderOverrides(false), []);
+  assert.deepEqual(packager.builderOverrides(true), [
+    "--config.appId=dev.codexwebgpt.launcher.opencodex",
+    "--config.productName=Codex Web GPT OpenCodex",
+    "--config.artifactName=codex-web-gpt-opencodex-${version}-${os}-${arch}.${ext}",
+    "--config.nsis.guid=7a35d84f-bf5d-4d71-9f59-8e78c35c5a52",
+    "--config.extraMetadata.main=electron/opencodex-provider-main.cjs",
+  ]);
+  assert.notEqual(manifest.build.appId, "dev.codexwebgpt.launcher.opencodex");
+  assert.notEqual(manifest.build.nsis.guid, "7a35d84f-bf5d-4d71-9f59-8e78c35c5a52");
+
+  const wrapper = fs.readFileSync(path.join(launcherRoot, "electron", "opencodex-provider-main.cjs"), "utf8");
+  assert.match(wrapper, /process\.argv\.includes\("--opencodex-provider"\)/);
+  assert.match(wrapper, /process\.argv\.push\("--opencodex-provider"\)/);
+  assert.match(wrapper, /require\("\.\/main\.cjs"\)/);
+});
+
+test("packaging cleanup keeps default and OpenCodex artifacts independent", () => {
+  const normal = "codex-web-gpt-4.0.5-win-x64.exe";
+  const openCodex = "codex-web-gpt-opencodex-4.0.5-win-x64.exe";
+  const blockmap = "codex-web-gpt-opencodex-4.0.5-win-x64.exe.blockmap";
+  assert.equal(packager.artifactBelongsToPackage(normal, false), true);
+  assert.equal(packager.artifactBelongsToPackage(openCodex, false), false);
+  assert.equal(packager.artifactBelongsToPackage(normal, true), false);
+  assert.equal(packager.artifactBelongsToPackage(openCodex, true), true);
+  assert.equal(packager.artifactBelongsToPackage(blockmap, true), true);
+  assert.equal(packager.artifactBelongsToPackage("codex-web-gpt-not-an-artifact.txt", false), false);
+});
+
 test("release installers resolve checksummed native launcher assets", () => {
   const shellInstaller = fs.readFileSync(path.join(repositoryRoot, "scripts", "install-launcher.sh"), "utf8");
   const windowsInstaller = fs.readFileSync(path.join(repositoryRoot, "scripts", "install-launcher.ps1"), "utf8");
@@ -65,7 +110,7 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(packager, /electron-builder\/out\/cli\/cli\.js/);
   assert.match(packager, /target === "--mac" && !env\.CSC_LINK && !env\.CSC_NAME/);
   assert.match(packager, /--config\.mac\.identity=-/);
-  assert.match(packager, /verifySignedMacArchive\(\)/);
+  assert.match(packager, /verifySignedMacArchive\(/);
   assert.match(packager, /codesign[\s\S]*--verify[\s\S]*--deep[\s\S]*--strict/);
   assert.match(packager, /validateRuntimeBundle/);
   assert.doesNotMatch(packager, /electron-builder\.cmd/);

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { defaultConfig } from "../src/config";
+import { defaultConfig, OPENCODEX_PROVIDER_CONFIG_PURPOSE } from "../src/config";
 import {
   CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE,
   CHATGPT_WEB_MODEL_ROUTES,
@@ -172,4 +172,42 @@ test("ChatGPT-only native catalog rows do not turn model discovery into a 502", 
     .toHaveLength(3);
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/"))
     .every(model => model.supported_in_api === true)).toBe(true);
+});
+
+test("OpenCodex provider discovery is local, V1-only, and retains its 900K compaction boundary", async () => {
+  const config = defaultConfig("browser-only");
+  config.purpose = OPENCODEX_PROVIDER_CONFIG_PURPOSE;
+  config.browserHost = "launcher";
+  config.browserHostDescriptorPath = "C:\\provider\\launcher-browser.json";
+  config.solAvailable = true;
+  config.proAvailable = true;
+  let upstreamCalls = 0;
+
+  const response = await modelsRequest(
+    new Request("http://127.0.0.1:17841/v1/models"),
+    config,
+    async () => {
+      upstreamCalls += 1;
+      throw new Error("provider-only catalog must not call the native upstream");
+    },
+    () => {
+      throw new Error("provider-only catalog must not read native context overrides");
+    },
+  );
+
+  expect(response.status).toBe(200);
+  const body = await response.json() as { models: Array<Record<string, unknown>> };
+  expect(body.models.map(model => model.slug)).toEqual([
+    "chatgpt-web/light",
+    "chatgpt-web/medium",
+    "chatgpt-web/high",
+    "chatgpt-web/extra-high",
+    "chatgpt-web/pro",
+  ]);
+  expect(body.models.every(model => model.context_window === 900_000)).toBe(true);
+  expect(body.models.every(model => model.max_context_window === 900_000)).toBe(true);
+  expect(body.models.every(model => model.auto_compact_token_limit === 900_000)).toBe(true);
+  expect(body.models.every(model => model.effective_context_window_percent === 100)).toBe(true);
+  expect(body.models.every(model => model.multi_agent_version === "v1")).toBe(true);
+  expect(upstreamCalls).toBe(0);
 });

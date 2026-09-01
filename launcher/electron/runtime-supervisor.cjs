@@ -11,6 +11,11 @@ const {
   terminateOwnedProcessTree,
 } = require("./process-tree.cjs");
 const { runtimeInvocation } = require("./runtime-command.cjs");
+const {
+  OPENCODEX_PROVIDER_CONFIG_PURPOSE,
+  OPENCODEX_PROVIDER_RUNTIME_HOST,
+  OPENCODEX_PROVIDER_RUNTIME_PORT,
+} = require("./profile.cjs");
 
 const RESTART_WINDOW_MS = 60_000;
 const MAX_RESTARTS_PER_WINDOW = 5;
@@ -187,11 +192,21 @@ function managedTunnelConnectArgs(config, invocation) {
   ];
 }
 
-function validateConfig(config, descriptorPath, platform = process.platform, launcherProfile = "production") {
+function validateConfig(
+  config,
+  descriptorPath,
+  platform = process.platform,
+  launcherProfile = "production",
+  providerOnly = false,
+) {
   if (!config || config.version !== 3) throw new Error("Runtime configuration is missing or unsupported");
   if (launcherProfile === "development") {
     if (config.purpose !== "dev-harness") {
       throw new Error("DEV launcher refuses a configuration that is not marked dev-harness");
+    }
+  } else if (providerOnly) {
+    if (config.purpose !== OPENCODEX_PROVIDER_CONFIG_PURPOSE) {
+      throw new Error("OpenCodex provider launcher refuses a configuration without the provider purpose");
     }
   } else if (config.purpose !== undefined) {
     throw new Error("Production launcher refuses a DEV harness configuration");
@@ -205,6 +220,9 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
   }
   if (config.browserInteractionMode !== "automatic" && config.browserInteractionMode !== "manual") {
     throw new Error("Runtime configuration has an invalid browser interaction mode");
+  }
+  if (providerOnly && config.browserInteractionMode !== "automatic") {
+    throw new Error("OpenCodex provider runtime requires automatic browser interaction");
   }
   if (config.subagentProtocol !== undefined
     && config.subagentProtocol !== "compatibility-v1"
@@ -224,6 +242,12 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     || config.port < 1
     || config.port > 65_535) {
     throw new Error("Runtime configuration has an invalid loopback endpoint");
+  }
+  if (providerOnly
+    && (config.host !== OPENCODEX_PROVIDER_RUNTIME_HOST || config.port !== OPENCODEX_PROVIDER_RUNTIME_PORT)) {
+    throw new Error(
+      `OpenCodex provider runtime must listen on ${OPENCODEX_PROVIDER_RUNTIME_HOST}:${OPENCODEX_PROVIDER_RUNTIME_PORT}`,
+    );
   }
   if (typeof config.controlToken !== "string" || !/^[A-Za-z0-9_-]{40,}$/.test(config.controlToken)) {
     throw new Error("Runtime configuration has an invalid lifecycle control token");
@@ -321,6 +345,7 @@ class RuntimeSupervisor {
     coreHome,
     browserDescriptorPath,
     launcherProfile = "production",
+    providerOnly = false,
     publishOperation,
     runtimeInvocationFactory = runtimeInvocation,
   }) {
@@ -334,7 +359,11 @@ class RuntimeSupervisor {
     if (launcherProfile !== "production" && launcherProfile !== "development") {
       throw new Error("Runtime supervisor launcher profile is invalid");
     }
+    if (providerOnly && launcherProfile !== "production") {
+      throw new Error("OpenCodex provider supervision requires the production runtime profile");
+    }
     this.launcherProfile = launcherProfile;
+    this.providerOnly = providerOnly === true;
     this.publishOperation = publishOperation;
     this.runtimeInvocationFactory = runtimeInvocationFactory;
     this.configPath = path.join(coreHome, "config.json");
@@ -366,6 +395,7 @@ class RuntimeSupervisor {
       this.browserDescriptorPath,
       this.platform,
       this.launcherProfile,
+      this.providerOnly,
     );
   }
 
@@ -379,8 +409,25 @@ class RuntimeSupervisor {
       if (config.purpose !== "dev-harness") {
         throw new Error("DEV launcher refuses a configuration that is not marked dev-harness");
       }
-    } else if (config.purpose !== undefined) {
+    } else if (this.providerOnly) {
+      if (config.purpose !== undefined && config.purpose !== OPENCODEX_PROVIDER_CONFIG_PURPOSE) {
+        throw new Error("OpenCodex provider launcher refuses a configuration with an unrelated purpose");
+      }
+  } else if (config.purpose !== undefined) {
       throw new Error("Production launcher refuses a DEV harness configuration");
+    }
+    if (this.providerOnly
+      && (config.browserHost !== "launcher"
+        || !absolutePath(config.browserHostDescriptorPath || "", this.platform)
+        || pathIdentity(config.browserHostDescriptorPath || "", this.platform)
+          !== pathIdentity(this.browserDescriptorPath, this.platform))) {
+      throw new Error("OpenCodex provider setup requires the launcher-owned browser descriptor");
+    }
+    if (this.providerOnly
+      && (config.host !== OPENCODEX_PROVIDER_RUNTIME_HOST || config.port !== OPENCODEX_PROVIDER_RUNTIME_PORT)) {
+      throw new Error(
+        `OpenCodex provider runtime must listen on ${OPENCODEX_PROVIDER_RUNTIME_HOST}:${OPENCODEX_PROVIDER_RUNTIME_PORT}`,
+      );
     }
     const mode = config.mode === "pro-only" ? "browser-only" : config.mode;
     if (mode !== "browser-only" && mode !== "full") {
@@ -2078,6 +2125,9 @@ class RuntimeSupervisor {
 
 module.exports = {
   MAX_RESTARTS_PER_WINDOW,
+  OPENCODEX_PROVIDER_CONFIG_PURPOSE,
+  OPENCODEX_PROVIDER_RUNTIME_HOST,
+  OPENCODEX_PROVIDER_RUNTIME_PORT,
   RESTART_WINDOW_MS,
   TUNNEL_HEALTH_POLL_INTERVAL_MS,
   TUNNEL_MONITOR_FAILURE_THRESHOLD,

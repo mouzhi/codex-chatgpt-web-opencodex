@@ -9,6 +9,37 @@ import {
 
 type JsonObject = Record<string, unknown>;
 
+/**
+ * Build the small native-Codex-shaped template used by the standalone OpenCodex provider.
+ *
+ * The normal launcher clones one of the rows returned by the official Codex catalog.  The
+ * provider-only launcher deliberately has no native Codex upstream, so it cannot use that
+ * discovery response as a template.  Keep the fallback explicit and owned by this adapter rather
+ * than allowing a missing upstream row to turn into a retry loop or a native model leak.
+ */
+function providerOnlyModelTemplate(config: AppConfig): JsonObject {
+  return {
+    slug: config.solAvailable ? "gpt-5.6-sol" : "gpt-5.6-luna",
+    display_name: config.solAvailable ? "5.6 Sol" : "5.6 Luna",
+    description: "ChatGPT Web through the standalone OpenCodex provider.",
+    shell_type: "shell_command",
+    visibility: "list",
+    supported_in_api: true,
+    // Provider-only has no official native row to copy. Both protocol surfaces are supported by
+    // the local Responses bridge; the selected protocol remains explicit in the persisted config.
+    multi_agent_version: config.subagentProtocol === "compatibility-v1" ? "v1" : "v2",
+    base_instructions: "You are a helpful coding assistant.",
+    supported_reasoning_levels: [
+      { effort: "low", description: "Low" },
+      { effort: "medium", description: "Medium" },
+      { effort: "high", description: "High" },
+      { effort: "xhigh", description: "Extra High" },
+      { effort: "max", description: "Pro" },
+    ],
+    tool_mode: null,
+  };
+}
+
 function object(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be a JSON object`);
@@ -194,4 +225,55 @@ export function augmentNativeModelCatalog(
     ...structuredClone(catalog),
     models: [...nativeModels, ...webModels],
   };
+}
+
+/**
+ * Return a catalog for the standalone OpenCodex provider.
+ *
+ * This route is intentionally separate from {@link augmentNativeModelCatalog}: a provider-only
+ * runtime must not fetch (or accidentally expose) the official native Codex catalog.  The returned
+ * shape remains the native Codex `{ models: [...] }` shape expected by this bridge, while every row
+ * is one of the ChatGPT Web routes proven available by the persisted account capability probe.
+ */
+export function buildProviderOnlyModelCatalog(config: AppConfig): JsonObject {
+  const template = providerOnlyModelTemplate(config);
+  // Full-mode browser turns retain large tasks by assembling multiple bounded ChatGPT transport
+  // stages.  Advertise the aggregate provider window to OpenCodex so its client-side compactor
+  // does not discard canonical history between those stages; the adapter still enforces each
+  // browser submission's measured boundary independently.
+  const providerContextWindow = 900_000;
+  const providerAutoCompactTokenLimit = 900_000;
+  const models = availableChatGptWebModelRoutes(config).map((route, index) => {
+    const model: JsonObject = {
+      slug: route.slug,
+      display_name: route.displayName,
+      description: route.description,
+      input_modalities: ["text", "image"],
+      visibility: "list",
+      supported_in_api: true,
+      // Provider-only is intentionally pinned to V1: browser-model V2 payloads are encrypted for
+      // a different backend and cannot be decoded by this local ChatGPT Web bridge.
+      multi_agent_version: "v1",
+      shell_type: template.shell_type,
+      base_instructions: template.base_instructions,
+      tool_mode: null,
+      upgrade: null,
+      // The route's fixed effort is the only effort that can reach its corresponding ChatGPT
+      // mode.  Do not expose the synthetic template's complete ladder to the caller.
+      default_reasoning_level: route.codexEffort,
+      supported_reasoning_levels: [{ effort: route.codexEffort, description: route.displayName }],
+      context_window: providerContextWindow,
+      max_context_window: providerContextWindow,
+      effective_context_window_percent: 100,
+      auto_compact_token_limit: providerAutoCompactTokenLimit,
+      additional_speed_tiers: [],
+      service_tiers: [],
+      default_service_tier: null,
+      // There is no native row whose priority can be inherited. Preserve the account-available
+      // route order and make each row deterministic for clients that sort by priority.
+      priority: index,
+    };
+    return model;
+  });
+  return { models };
 }

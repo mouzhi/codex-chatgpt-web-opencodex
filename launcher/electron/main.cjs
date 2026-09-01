@@ -27,7 +27,15 @@ const {
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
-const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
+const {
+  DEVELOPMENT_PROFILE,
+  OPENCODEX_PROVIDER_PROFILE,
+  OPENCODEX_PROVIDER_RUNTIME_HOST,
+  OPENCODEX_PROVIDER_RUNTIME_PORT,
+  launcherProfileOwnsCodexRoute,
+  launcherRuntimeProfile,
+  resolveLauncherProfile,
+} = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
 const {
@@ -45,6 +53,9 @@ const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const SOURCE_ROOT = path.resolve(__dirname, "../..");
 const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
 const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
+const IS_PROVIDER_ONLY_PROFILE = LAUNCHER_PROFILE.kind === OPENCODEX_PROVIDER_PROFILE;
+const OWNS_CODEX_ROUTE = launcherProfileOwnsCodexRoute(LAUNCHER_PROFILE.kind);
+const RUNTIME_LAUNCHER_PROFILE = launcherRuntimeProfile(LAUNCHER_PROFILE.kind);
 const CORE_HOME = LAUNCHER_PROFILE.coreHome;
 const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browser.json");
 const BROWSER_HELPER_PATH = app.isPackaged
@@ -63,7 +74,11 @@ process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
 process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
 app.setName(LAUNCHER_PROFILE.displayName);
 if (process.platform === "win32") {
-  app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");
+  app.setAppUserModelId(IS_DEV_PROFILE
+    ? "dev.codexwebgpt.launcher.dev"
+    : IS_PROVIDER_ONLY_PROFILE
+      ? "dev.codexwebgpt.launcher.opencodex"
+      : "dev.codexwebgpt.launcher");
 }
 const launcherUserData = LAUNCHER_PROFILE.userData;
 fs.mkdirSync(launcherUserData, { recursive: true, mode: 0o700 });
@@ -111,6 +126,26 @@ function send(channel, value) {
   }
 }
 
+function codexRouteStatePatch(patch = {}) {
+  if (OWNS_CODEX_ROUTE) return patch;
+  return {
+    ...patch,
+    // OpenCodex directly owns this provider route; do not wait for or mutate the native Codex route.
+    codexCatalogVerified: true,
+    codexRestartRequired: false,
+  };
+}
+
+function assertProviderRuntimeEndpoint(config) {
+  if (!IS_PROVIDER_ONLY_PROFILE || !config) return config;
+  if (config.host !== OPENCODEX_PROVIDER_RUNTIME_HOST || config.port !== OPENCODEX_PROVIDER_RUNTIME_PORT) {
+    throw new Error(
+      `OpenCodex provider runtime must listen on ${OPENCODEX_PROVIDER_RUNTIME_HOST}:${OPENCODEX_PROVIDER_RUNTIME_PORT}`,
+    );
+  }
+  return config;
+}
+
 function publishOperation(operation) {
   lastOperation = operation;
   send("launcher:operation", operation);
@@ -122,6 +157,7 @@ function stopCatalogVerificationMonitor() {
 }
 
 function startCatalogVerificationMonitor({ logger, stateStore }) {
+  if (!OWNS_CODEX_ROUTE) return;
   stopCatalogVerificationMonitor();
   const check = async () => {
     const current = stateStore.read();
@@ -160,6 +196,7 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
 }
 
 async function restoreCodexRouteAfterRuntimeFailure({ logger, stateStore }) {
+  if (!OWNS_CODEX_ROUTE) return { restored: false, skipped: true };
   try {
     const route = await runtimeHost.restoreBridgeRoute("runtime-start-fail-safe");
     if (!route.installed || route.active) return { restored: false };
@@ -462,10 +499,14 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:complete-onboarding", (_event, language, rawInteractionMode) => {
     const current = stateStore.read();
     if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
-    if (current.autoStart) setAutostart(app, true);
+    const browserInteractionMode = validateBrowserInteractionMode(rawInteractionMode);
+    if (IS_PROVIDER_ONLY_PROFILE && browserInteractionMode !== "automatic") {
+      throw new Error("OpenCodex provider launcher keeps browser interaction automatic");
+    }
+    if (current.autoStart) setAutostart(app, true, LAUNCHER_PROFILE);
     const next = stateStore.update({
       language: validateLanguage(language),
-      browserInteractionMode: validateBrowserInteractionMode(rawInteractionMode),
+      browserInteractionMode,
       onboardingComplete: true,
     });
     updateTrayMenu(next.language);
@@ -629,6 +670,9 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:uninstall-integration", async () => {
     if (IS_DEV_PROFILE) throw new Error("DEV profile has no Codex integration to remove");
+    if (IS_PROVIDER_ONLY_PROFILE) {
+      throw new Error("OpenCodex provider launcher cannot remove the native Codex integration");
+    }
     const copy = nativeCopyFor(stateStore.read().language);
     const confirmation = await dialog.showMessageBox(mainWindow, {
       type: "warning",
@@ -683,7 +727,7 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
-    stateStore.update({
+    stateStore.update(codexRouteStatePatch({
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
@@ -697,20 +741,23 @@ function registerIpc({ logger, stateStore }) {
         mcpRuntimeInstalled: false,
         mcpGuideStep: 0,
       }),
-    });
+    }));
     await browserHost.returnToIdle().catch((error) => {
       logger.warn("browser.idle_cleanup_failed", {
         message: error instanceof Error ? error.message : String(error),
       });
     });
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
-    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
+    if (OWNS_CODEX_ROUTE) startCatalogVerificationMonitor({ logger, stateStore });
+    return { ok: true, stdout: result.stdout, restartRequired: OWNS_CODEX_ROUTE };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     const currentMode = stateStore.read().browserInteractionMode;
     const interactionMode = input?.interactionMode === undefined
       ? currentMode
       : validateBrowserInteractionMode(input.interactionMode);
+    if (IS_PROVIDER_ONLY_PROFILE && interactionMode !== "automatic") {
+      throw new Error("OpenCodex provider MCP setup requires automatic browser interaction");
+    }
     const interactionModeChange = interactionMode !== currentMode;
     const setup = IS_DEV_PROFILE
       ? runtimeHost.setupDevMcp.bind(runtimeHost)
@@ -725,7 +772,7 @@ function registerIpc({ logger, stateStore }) {
     const result = interactionModeChange
       ? await browserHost.withInteractionModeChange(interactionMode, runSetup)
       : await runSetup();
-    const state = stateStore.update({
+    const state = stateStore.update(codexRouteStatePatch({
       browserInteractionMode: interactionMode,
       ...(interactionMode === "manual" ? { experimentalBiggerContext: false } : {}),
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
@@ -735,10 +782,10 @@ function registerIpc({ logger, stateStore }) {
       mcpSetupComplete: false,
       mcpGuideStep: 2,
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
-    });
+    }));
     send("launcher:state-changed", state);
     if (interactionModeChange) send("launcher:browser-state", browserHost.snapshot());
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    if (OWNS_CODEX_ROUTE) startCatalogVerificationMonitor({ logger, stateStore });
     return { ok: true, stdout: result.stdout };
   });
   handle("launcher:set-mcp-step", (_event, step) => {
@@ -749,7 +796,7 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:autostart", (_event, enabled) => {
     if (IS_DEV_PROFILE) throw new Error("The isolated DEV launcher is started explicitly from the repository CLI");
     const desired = enabled === true;
-    const autostart = setAutostart(app, desired);
+    const autostart = setAutostart(app, desired, LAUNCHER_PROFILE);
     return {
       state: stateStore.update({ autoStart: desired }),
       ...autostart,
@@ -757,16 +804,19 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:bigger-context", async (_event, enabled) => {
     const result = await runtimeHost.setBiggerContext(enabled === true);
-    const state = stateStore.update({
+    const state = stateStore.update(codexRouteStatePatch({
       experimentalBiggerContext: result.enabled,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
-    });
+    }));
     send("launcher:state-changed", state);
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    if (OWNS_CODEX_ROUTE) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
+    if (IS_PROVIDER_ONLY_PROFILE) {
+      throw new Error("Zero Risk manual interaction is unavailable in the OpenCodex provider launcher");
+    }
     const browserOperation = browserHost.currentOperation();
     if (browserHost.activeTraceId || browserOperation) {
       throw new Error(
@@ -776,17 +826,20 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = await runtimeHost.setZeroRiskPro(enabled === true);
-    const state = stateStore.update({
+    const state = stateStore.update(codexRouteStatePatch({
       zeroRiskProEnabled: result.enabled,
       codexCatalogVerified: IS_DEV_PROFILE,
       codexRestartRequired: !IS_DEV_PROFILE,
-    });
+    }));
     send("launcher:state-changed", state);
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    if (OWNS_CODEX_ROUTE) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
   handle("launcher:browser-interaction-mode", async (_event, rawMode) => {
     const mode = validateBrowserInteractionMode(rawMode);
+    if (IS_PROVIDER_ONLY_PROFILE && mode !== "automatic") {
+      throw new Error("OpenCodex provider launcher keeps browser interaction automatic");
+    }
     const current = stateStore.read();
     if (current.browserInteractionMode === mode) {
       return { state: current, credentialsRequired: false, targetMode: mode };
@@ -806,17 +859,17 @@ function registerIpc({ logger, stateStore }) {
       mode,
       () => runtimeHost.setBrowserInteractionMode(mode),
     );
-    const state = stateStore.update({
+    const state = stateStore.update(codexRouteStatePatch({
       browserInteractionMode: mode,
       ...(mode === "manual" ? { experimentalBiggerContext: false } : {}),
       ...(result.configured ? {
         codexCatalogVerified: IS_DEV_PROFILE,
         codexRestartRequired: !IS_DEV_PROFILE,
       } : {}),
-    });
+    }));
     send("launcher:state-changed", state);
     send("launcher:browser-state", browserHost.snapshot());
-    if (!IS_DEV_PROFILE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
+    if (OWNS_CODEX_ROUTE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
     return { state, credentialsRequired: false, targetMode: mode };
   });
   handle("launcher:set-preference", (_event, key, value) => {
@@ -931,6 +984,10 @@ async function start() {
   await app.whenReady();
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
+  if (IS_PROVIDER_ONLY_PROFILE
+    && (stateStore.read().browserInteractionMode !== "automatic" || stateStore.read().zeroRiskProEnabled === true)) {
+    stateStore.update({ browserInteractionMode: "automatic", zeroRiskProEnabled: false });
+  }
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
       language: stateStore.read().language || "en",
@@ -949,12 +1006,12 @@ async function start() {
       codexRestartRequired: false,
     });
   }
-  const autostart = IS_DEV_PROFILE ? { supported: false, enabled: false } : getAutostart(app);
+  const autostart = IS_DEV_PROFILE ? { supported: false, enabled: false } : getAutostart(app, LAUNCHER_PROFILE);
   if (!IS_DEV_PROFILE
     && stateStore.read().onboardingComplete
     && autostart.supported
     && stateStore.read().autoStart !== autostart.enabled) {
-    setAutostart(app, stateStore.read().autoStart);
+    setAutostart(app, stateStore.read().autoStart, LAUNCHER_PROFILE);
   }
   const logger = createLogger({
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
@@ -981,7 +1038,8 @@ async function start() {
     runtimeRootProvider,
     coreHome: CORE_HOME,
     browserDescriptorPath: BROWSER_DESCRIPTOR_PATH,
-    launcherProfile: LAUNCHER_PROFILE.kind,
+    launcherProfile: RUNTIME_LAUNCHER_PROFILE,
+    providerOnly: IS_PROVIDER_ONLY_PROFILE,
     publishOperation,
   });
   runtimeHost = new RuntimeHost({
@@ -993,7 +1051,8 @@ async function start() {
     browserDescriptorPath: BROWSER_DESCRIPTOR_PATH,
     coreHome: CORE_HOME,
     codexHome: LAUNCHER_PROFILE.codexHome,
-    launcherProfile: LAUNCHER_PROFILE.kind,
+    launcherProfile: RUNTIME_LAUNCHER_PROFILE,
+    providerOnly: IS_PROVIDER_ONLY_PROFILE,
     publishOperation,
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
@@ -1014,7 +1073,7 @@ async function start() {
     logger,
     loginWithPasskey: () => runtimeHost.capturePasskeyLogin(),
     partition: LAUNCHER_PROFILE.browserPartition,
-    profile: LAUNCHER_PROFILE.kind,
+    profile: RUNTIME_LAUNCHER_PROFILE,
     publishState: (state) => send("launcher:browser-state", state),
     showWindow: showMainWindow,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
@@ -1122,9 +1181,13 @@ async function start() {
     }
   } else void (async () => {
     await startupAuthenticationRefresh;
+    if (IS_PROVIDER_ONLY_PROFILE) {
+      // Validate the fixed loopback endpoint before the supervisor can spawn the provider bridge.
+      assertProviderRuntimeEndpoint(runtimeSupervisor.readSetupConfig());
+    }
     const upgrade = await runtimeHost.upgradeManagedRuntime();
     if (upgrade.updated) {
-      const state = stateStore.update({
+      const state = stateStore.update(codexRouteStatePatch({
         coreSetupComplete: true,
         codexCatalogVerified: false,
         codexRestartRequired: true,
@@ -1139,7 +1202,7 @@ async function start() {
           mcpSetupComplete: false,
           mcpGuideStep: 0,
         }),
-      });
+      }));
       send("launcher:state-changed", state);
       logger.info("runtime.release_upgraded", {
         fromVersion: upgrade.fromVersion,
@@ -1149,6 +1212,7 @@ async function start() {
       });
     }
     const configuredRuntime = runtimeHost.runtimeConfigSnapshot();
+    assertProviderRuntimeEndpoint(configuredRuntime.config);
     if (configuredRuntime.configured) {
       const enabled = configuredRuntime.config?.experimentalBiggerContext === true;
       const zeroRiskProEnabled = configuredRuntime.config?.zeroRiskProEnabled === true;
@@ -1161,13 +1225,14 @@ async function start() {
     }
     const runtime = await runtimeSupervisor.startIfConfigured();
     if (runtime.status !== "ready") return runtime;
+    if (!OWNS_CODEX_ROUTE) return { ...runtime, bridgeRouteChanged: false };
     const route = await runtimeHost.connectBridgeRoute();
     return { ...runtime, bridgeRouteChanged: route.changed === true };
   })().then(async (runtime) => {
     if (runtime.status === "ready") {
       const config = runtimeSupervisor.readConfig();
       const current = stateStore.read();
-      const patch = {
+      const patch = codexRouteStatePatch({
         coreSetupComplete: true,
         mcpRuntimeInstalled: config.mode === "full",
         experimentalBiggerContext: config.experimentalBiggerContext === true,
@@ -1180,25 +1245,25 @@ async function start() {
           mcpSetupComplete: false,
           mcpGuideStep: 0,
         } : {}),
-      };
+      });
       if (Object.entries(patch).some(([key, value]) => current[key] !== value)) {
         const state = stateStore.update(patch);
         send("launcher:state-changed", state);
       }
-      startCatalogVerificationMonitor({ logger, stateStore });
+      if (OWNS_CODEX_ROUTE) startCatalogVerificationMonitor({ logger, stateStore });
       return;
     }
     if (runtime.status === "not-configured") {
       const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
       const current = stateStore.read();
       if (current.coreSetupComplete || current.mcpRuntimeInstalled || current.mcpSetupComplete) {
-        const state = stateStore.update({
+        const state = stateStore.update(codexRouteStatePatch({
           coreSetupComplete: false,
           codexCatalogVerified: false,
           mcpRuntimeInstalled: false,
           mcpSetupComplete: false,
           mcpGuideStep: 0,
-        });
+        }));
         send("launcher:state-changed", state);
       }
       if (routeRecovery.error) {
@@ -1211,7 +1276,7 @@ async function start() {
       return;
     }
     const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
-    const state = stateStore.update({ coreSetupComplete: false, codexCatalogVerified: false });
+    const state = stateStore.update(codexRouteStatePatch({ coreSetupComplete: false, codexCatalogVerified: false }));
     send("launcher:state-changed", state);
     if (runtime.status === "external" || runtime.status === "needs-setup") {
       const detail = runtime.detail || (
@@ -1238,7 +1303,7 @@ async function start() {
         ? `${primary}; the previous Codex route was restored, restart Codex once`
         : primary;
     logger.error("runtime.startup_failed", { message });
-    const state = stateStore.update({ coreSetupComplete: false, codexCatalogVerified: false });
+    const state = stateStore.update(codexRouteStatePatch({ coreSetupComplete: false, codexCatalogVerified: false }));
     send("launcher:state-changed", state);
     publishOperation({ name: "runtime-start", status: "failed", message });
   });

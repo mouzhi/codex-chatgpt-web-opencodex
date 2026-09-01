@@ -16,6 +16,13 @@ export type BrowserInteractionMode = "automatic" | "manual";
 export type SubagentProtocol = "compatibility-v1" | "native";
 
 /**
+ * Isolates the standalone OpenCodex bridge from the native Codex integration.  This is a
+ * persisted discriminator rather than a launch-time convenience flag so every data-plane and
+ * lifecycle boundary can fail closed when an operator points at the wrong runtime home.
+ */
+export const OPENCODEX_PROVIDER_CONFIG_PURPOSE = "opencodex-provider" as const;
+
+/**
  * ChatGPT caches a connector's public MCP contract by connector identity. The direct turn-token
  * contract therefore has a new identity instead of mutating the retired connector in place.
  */
@@ -90,7 +97,7 @@ export interface TunnelConfig {
 
 export interface AppConfig {
   version: 3;
-  purpose?: "dev-harness";
+  purpose?: "dev-harness" | typeof OPENCODEX_PROVIDER_CONFIG_PURPOSE;
   releaseVersion: string;
   mode: RuntimeMode;
   subagentProtocol: SubagentProtocol;
@@ -380,7 +387,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid configuration object in ${path}`);
   const parsed = value as Partial<AppConfig>;
   if (parsed.version !== 3) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
-  if (parsed.purpose !== undefined && parsed.purpose !== "dev-harness") {
+  if (parsed.purpose !== undefined
+    && parsed.purpose !== "dev-harness"
+    && parsed.purpose !== OPENCODEX_PROVIDER_CONFIG_PURPOSE) {
     throw new Error(`Invalid configuration purpose in ${path}`);
   }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
@@ -403,7 +412,23 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (browserInteractionMode === "manual" && parsed.browserHost !== "launcher") {
     throw new Error(`Zero Risk requires the launcher browser host in ${path}`);
   }
+  if (parsed.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
+    && parsed.browserHost !== "launcher") {
+    throw new Error(`OpenCodex provider configuration requires launcher browser host in ${path}`);
+  }
+  if (parsed.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
+    && browserInteractionMode !== "automatic") {
+    throw new Error(`OpenCodex provider configuration requires automatic browser interaction in ${path}`);
+  }
+  if (parsed.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
+    && parsed.subagentProtocol !== "compatibility-v1") {
+    throw new Error(`OpenCodex provider configuration requires compatibility-v1 subagents in ${path}`);
+  }
   if (!Number.isInteger(parsed.port) || parsed.port! < 1 || parsed.port! > 65_535) throw new Error(`Invalid port in ${path}`);
+  if (parsed.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
+    && (parsed.host !== "127.0.0.1" || parsed.port !== 17_841)) {
+    throw new Error(`OpenCodex provider configuration requires 127.0.0.1:17841 in ${path}`);
+  }
   if (!Number.isSafeInteger(parsed.contextWindow) || parsed.contextWindow! <= 0) {
     throw new Error(`Invalid contextWindow in ${path}`);
   }

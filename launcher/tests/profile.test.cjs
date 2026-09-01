@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const { resolveLauncherProfile } = require("../electron/profile.cjs");
+const {
+  OPENCODEX_PROVIDER_PROFILE,
+  PRODUCTION_BROWSER_PARTITION,
+  resolveLauncherProfile,
+} = require("../electron/profile.cjs");
 
 test("DEV launcher profile isolates every durable home from production", () => {
   const homeDir = path.resolve("/Users/tester");
@@ -59,4 +63,51 @@ test("DEV launcher ignores generic production path overrides", () => {
   assert.equal(development.coreHome, path.join(homeDir, "isolated-dev"));
   assert.equal(development.codexHome, path.join(homeDir, "isolated-dev", "codex-home"));
   assert.equal(development.userData, path.join(homeDir, "isolated-dev", "launcher"));
+});
+
+test("OpenCodex provider launcher uses fixed bridge homes and the production login partition", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "Library", "Application Support");
+  const localAppData = path.join(homeDir, "Library", "Application Support", "Local");
+  const provider = resolveLauncherProfile({
+    argv: ["electron", ".", "--opencodex-provider"],
+    env: {
+      CODEX_CHATGPT_WEB_HOME: path.join(homeDir, "unexpected-core"),
+      CODEX_HOME: path.join(homeDir, "unexpected-codex"),
+      CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(homeDir, "unexpected-user-data"),
+      LOCALAPPDATA: localAppData,
+    },
+    homeDir,
+    appData,
+  });
+
+  assert.equal(provider.kind, OPENCODEX_PROVIDER_PROFILE);
+  assert.equal(provider.displayName, "Codex Web GPT OpenCodex");
+  assert.equal(provider.coreHome, path.join(homeDir, ".codex-chatgpt-web-opencodex"));
+  assert.equal(provider.codexHome, path.join(homeDir, ".codex-opencodex-web-bridge"));
+  assert.equal(provider.userData, path.join(localAppData, "Codex Web GPT OpenCodex"));
+  assert.equal(provider.browserPartition, PRODUCTION_BROWSER_PARTITION);
+});
+
+test("OpenCodex provider falls back to appData when LOCALAPPDATA is absent", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "Library", "Application Support", "Roaming");
+  const provider = resolveLauncherProfile({
+    argv: ["electron", ".", "--opencodex-provider"],
+    env: {},
+    homeDir,
+    appData,
+  });
+
+  assert.equal(provider.userData, path.join(appData, "Codex Web GPT OpenCodex"));
+});
+
+test("OpenCodex provider and DEV launcher flags cannot select two profiles", () => {
+  const homeDir = path.resolve("/Users/tester");
+  assert.throws(() => resolveLauncherProfile({
+    argv: ["electron", ".", "--opencodex-provider", "--dev-profile"],
+    env: {},
+    homeDir,
+    appData: path.join(homeDir, "Library", "Application Support"),
+  }), /mutually exclusive/);
 });

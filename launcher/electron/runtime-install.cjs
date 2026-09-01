@@ -215,6 +215,24 @@ async function waitForPackagedRuntimeSource({
   throw new Error(`Packaged runtime did not fully materialize within ${timeoutMs}ms: ${detail}`);
 }
 
+function removePreviousRuntime(
+  previous,
+  { platform = process.platform, remove = fs.rmSync } = {},
+) {
+  try {
+    remove(previous, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    // Windows keeps executable files locked while a previously supervised tunnel is still
+    // draining. The new destination has already been installed and validated, so a failure to
+    // remove this rollback-only directory must not prevent the launcher from starting and
+    // adopting/stopping that runtime. A later install can remove the stale directory once the old
+    // process releases its image.
+    if (platform !== "win32" || !["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+    return false;
+  }
+}
+
 function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   if (!app.isPackaged) return null;
   const identity = {
@@ -274,7 +292,7 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
       throw error;
     }
     if (previousMoved) {
-      fs.rmSync(previous, { recursive: true, force: true });
+      removePreviousRuntime(previous);
       previousMoved = false;
     }
   } finally {
@@ -290,6 +308,7 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
 
 module.exports = {
   ensurePackagedRuntime,
+  removePreviousRuntime,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 };

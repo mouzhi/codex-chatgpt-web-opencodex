@@ -65,6 +65,7 @@ Setup options:
   --zero-risk-pro              Zero Risk: also install the explicit Pro-sized model row
   --zero-risk-default          Zero Risk: install only the default model row
   --port NUMBER                Loopback Responses port (default: 17841)
+  --provider-only              Configure the isolated OpenCodex provider; leaves native Codex untouched
   --chrome PATH                Google Chrome/Chromium executable used for account login
   --browser-host-descriptor PATH
                                Use the embedded launcher browser described by this owner-only file
@@ -264,10 +265,12 @@ async function setupCommand(args: string[]): Promise<void> {
   const browserOnly = takeFlag(args, "--browser-only");
   const full = takeFlag(args, "--full");
   if (browserOnly === full) throw new Error("Choose exactly one setup mode: --browser-only or --full");
+  const providerOnly = takeFlag(args, "--provider-only");
   const portRaw = takeOption(args, "--port");
   let acknowledged = takeFlag(args, "--acknowledge-unofficial");
   const options: SetupOptions = {
     mode: full ? "full" : "browser-only",
+    ...(providerOnly ? { providerOnly: true } : {}),
     ...(portRaw ? { port: Number(portRaw) } : {}),
   };
   const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
@@ -279,6 +282,9 @@ async function setupCommand(args: string[]): Promise<void> {
   }
   if (automaticBrowserInteraction || manualBrowserInteraction) {
     options.browserInteractionMode = manualBrowserInteraction ? "manual" : "automatic";
+  }
+  if (providerOnly && options.browserInteractionMode === "manual") {
+    throw new Error("--provider-only requires automatic browser interaction; Zero Risk manual turns cannot serve OpenCodex requests");
   }
   const subagentProtocol = takeOption(args, "--subagent-protocol");
   if (subagentProtocol !== undefined) {
@@ -312,7 +318,11 @@ async function setupCommand(args: string[]): Promise<void> {
     throw new Error("Choose at most one Zero Risk model profile: --zero-risk-pro or --zero-risk-default");
   }
   if (zeroRiskPro || zeroRiskDefault) options.zeroRiskProEnabled = zeroRiskPro;
-  options.replaceCodexRoute = takeFlag(args, "--replace-codex-route");
+  const replaceCodexRoute = takeFlag(args, "--replace-codex-route");
+  if (providerOnly && replaceCodexRoute) {
+    throw new Error("--provider-only cannot replace the native Codex route");
+  }
+  if (!providerOnly) options.replaceCodexRoute = replaceCodexRoute;
   options.restartService = takeFlag(args, "--restart-service");
   assertNoArgs(args);
 
@@ -357,13 +367,18 @@ async function setupCommand(args: string[]): Promise<void> {
     stdout.write("One account-level step remains: attach the tunnel to the ChatGPT connector named in config.\n");
     stdout.write("Open: https://chatgpt.com/#settings/Plugins\n");
   }
-  stdout.write("Restart the Codex app once so its native model catalog refreshes through the installed route.\n");
+  if (result.codexRestartRequired) {
+    stdout.write("Restart the Codex app once so its native model catalog refreshes through the installed route.\n");
+  } else if (providerOnly) {
+    stdout.write("OpenCodex provider setup does not modify the native Codex configuration.\n");
+  }
 }
 
 async function doctorCommand(args: string[]): Promise<void> {
   const json = takeFlag(args, "--json");
+  const providerOnly = takeFlag(args, "--provider-only");
   assertNoArgs(args);
-  const report = await runDoctor();
+  const report = await runDoctor({ providerOnly });
   stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : formatDoctorReport(report));
   if (!report.ok) process.exitCode = 1;
 }
