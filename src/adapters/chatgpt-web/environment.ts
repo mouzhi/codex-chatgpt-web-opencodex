@@ -568,16 +568,18 @@ function nativeSessionEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnviro
   const input = Array.isArray(body?.input) ? body.input : [];
   const activeUser = [...input].reverse().map(record)
     .find(item => item?.type === "message" && item.role === "user" && !contextualUserMessage(item));
-  if (!activeUser || typeof activeUser.id !== "string" || !activeUser.id) return undefined;
+  if (!activeUser) return undefined;
   const activeTurnId = itemTurnId(activeUser);
   if (activeTurnId !== undefined && activeTurnId !== turnId) return undefined;
+  const activeUserText = rawMessageText(activeUser);
+  if (!activeUserText) return undefined;
 
   const workspaces = record(metadata.workspaces);
   if (metadata.workspaces !== undefined && !workspaces) return undefined;
   const metadataRoots = Object.keys(workspaces ?? {});
   if (metadataRoots.some(root => !isAbsolute(root))) return undefined;
 
-  const environment = resolveNativeCodexTurnEnvironment(threadId, turnId);
+  const environment = resolveNativeCodexTurnEnvironment(threadId, turnId, activeUserText);
   if (!environment) return undefined;
   const metadataSandbox = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
   if (!metadataSandbox) return undefined;
