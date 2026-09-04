@@ -756,13 +756,13 @@ export async function throwIfChatGptSessionFailureAlert(page: Page): Promise<voi
 }
 
 const chatGptTerminalErrorAlert = (scope: ChatGptTextScope): Locator => scope
-  .getByText(/Something went wrong[\s\S]*help\.openai\.com/i)
+  .getByText(/(?:Something went wrong|A network error occurred)[\s\S]*help\.openai\.com/i)
   .last();
 
 export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope): Promise<void> {
   if (!await chatGptTerminalErrorAlert(scope).isVisible().catch(() => false)) return;
   throw new ChatGptWebAdapterError(
-    "ChatGPT ended the turn with 'Something went wrong'. Retry the turn.",
+    "ChatGPT ended the turn with a retryable web error. Retry the turn from the latest Codex response boundary.",
     { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true },
   );
 }

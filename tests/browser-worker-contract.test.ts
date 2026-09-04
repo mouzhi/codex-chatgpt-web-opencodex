@@ -2243,10 +2243,11 @@ test("unrelated ChatGPT dialogs are left untouched", async () => {
   expect(fixture.pressed).toEqual([]);
 });
 
-test("the known terminal ChatGPT error alert returns a structured retryable failure", async () => {
-  const fixture = dialogPage(
-    "Something went wrong. If this issue persists please contact us through our help center at help.openai.com.",
-  );
+test.each([
+  "Something went wrong. If this issue persists please contact us through our help center at help.openai.com.",
+  "A network error occurred. Please check your connection and try again. If this issue persists please contact us through our help center at help.openai.com.",
+])("a known terminal ChatGPT web error returns a structured retryable failure: %s", async alertText => {
+  const fixture = dialogPage(alertText);
 
   await expect(throwIfChatGptTerminalErrorAlert(fixture.page)).rejects.toMatchObject({
     name: "ChatGptWebAdapterError",
