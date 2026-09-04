@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
+import { resolveNativeCodexTurnEnvironment } from "./native-session-environment";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -543,9 +544,71 @@ function matchesPath(root: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+function nonEmptyMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function nativeSessionEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment | undefined {
+  const metadata = clientTurnMetadata(parsed);
+  if (!metadata || metadata.request_kind !== "turn") return undefined;
+
+  // These fields and workspaces are reserved by Codex core and cannot be overridden through the
+  // app-server's responsesapi_client_metadata extension. Require the complete current-turn shape
+  // before consulting local state, then bind the result to the exact thread and turn.
+  const installationId = nonEmptyMetadataString(metadata, "installation_id");
+  const sessionId = nonEmptyMetadataString(metadata, "session_id");
+  const threadId = nonEmptyMetadataString(metadata, "thread_id");
+  const turnId = nonEmptyMetadataString(metadata, "turn_id");
+  const windowId = nonEmptyMetadataString(metadata, "window_id");
+  const contextWindowId = nonEmptyMetadataString(metadata, "context_window_id");
+  if (!installationId || !sessionId || !threadId || !turnId || !windowId || !contextWindowId) return undefined;
+
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const activeUser = [...input].reverse().map(record)
+    .find(item => item?.type === "message" && item.role === "user" && !contextualUserMessage(item));
+  if (!activeUser || typeof activeUser.id !== "string" || !activeUser.id) return undefined;
+  const activeTurnId = itemTurnId(activeUser);
+  if (activeTurnId !== undefined && activeTurnId !== turnId) return undefined;
+
+  const workspaces = record(metadata.workspaces);
+  if (metadata.workspaces !== undefined && !workspaces) return undefined;
+  const metadataRoots = Object.keys(workspaces ?? {});
+  if (metadataRoots.some(root => !isAbsolute(root))) return undefined;
+
+  const environment = resolveNativeCodexTurnEnvironment(threadId, turnId);
+  if (!environment) return undefined;
+  const metadataSandbox = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
+  if (!metadataSandbox) return undefined;
+  if (metadataSandbox === "platform") {
+    if (environment.sandboxType === "dangerFullAccess") return undefined;
+  } else if (metadataSandbox !== environment.sandboxType) {
+    return undefined;
+  }
+  if (metadataRoots.some(root => !environment.roots.some(trusted => matchesPath(trusted, root)))) return undefined;
+
+  const sandboxPolicy: ChatGptSandboxPolicy = environment.sandboxType === "dangerFullAccess"
+    ? { type: "dangerFullAccess" }
+    : environment.sandboxType === "workspaceWrite"
+      ? { type: "workspaceWrite", writableRoots: environment.writableRoots, networkAccess: environment.networkAccess }
+      : { type: "readOnly", networkAccess: environment.networkAccess };
+  return {
+    cwd: environment.cwd,
+    roots: environment.roots,
+    writableRoots: environment.writableRoots,
+    sandboxPolicy,
+    tools: parsed.context.tools ?? [],
+  };
+}
+
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
   const text = trustedEnvironmentText(parsed);
   const cwdMatches = environmentCwdMatches(text, clientMetadataWorkspaceRoots(parsed));
+  if (cwdMatches.length === 0 && !/<\/?(?:environment_context|environments|environment|cwd|filesystem|workspace_roots|permission_profile|sandbox_mode)\b/i.test(text)) {
+    const nativeEnvironment = nativeSessionEnvironment(parsed);
+    if (nativeEnvironment) return nativeEnvironment;
+  }
   const cwdCandidates = uniqueAbsolutePaths(cwdMatches, "cwd");
   if (cwdCandidates.length !== 1) throw new Error("ChatGPT web turn has conflicting trusted Codex cwd values");
   const cwd = cwdCandidates[0]!;
