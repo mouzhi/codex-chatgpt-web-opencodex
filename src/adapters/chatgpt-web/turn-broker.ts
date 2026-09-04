@@ -8,6 +8,7 @@ import {
   type CompactionTransactionHandle,
 } from "./compaction-transaction";
 import type { ChatGptTurnEnvironment } from "./environment";
+import { transportBoundToolArguments } from "./tool-transport-policy";
 
 interface PendingTurn extends ChatGptTurnEnvironment {
   expiresAt?: number;
@@ -1100,7 +1101,9 @@ export class TurnBroker implements TurnBrokerOwner {
       callId,
       wireName,
       freeform: request.freeform === true,
-      ...(request.freeform === true ? { input: request.input ?? "" } : { arguments: request.arguments ?? {} }),
+      ...(request.freeform === true ? { input: request.input ?? "" } : {
+        arguments: transportBoundToolArguments(wireName, request.arguments ?? {}),
+      }),
     };
     return new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
       binding.channel.invocations.set(callId, { request: toolRequest, resolve: resolveInvoke, reject: rejectInvoke });

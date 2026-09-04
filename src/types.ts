@@ -272,6 +272,10 @@ export interface CodexProviderConfig {
     browserHelperScriptPath?: string;
     /** Explicit private diagnostic root for isolated harnesses. */
     browserDiagnosticsPath?: string;
+    /** Private Markdown and JSON copies of completed or recoverable terminal browser output. */
+    finalOutputDirectory?: string;
+    /** Keep the terminal temporary-chat page visible for manual review before its 30-minute TTL. */
+    preserveTerminalPage?: boolean;
     /** Playwright storage-state file created by the explicit browser login. */
     storageStatePath?: string;
     /** System Chrome executable. The runtime never downloads a browser. */

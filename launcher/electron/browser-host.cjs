@@ -2217,6 +2217,7 @@ class BrowserHost {
     message,
     retain = false,
     connectorBound = false,
+    preservePage = false,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2241,6 +2242,34 @@ class BrowserHost {
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
+    }
+    if (preservePage) {
+      const reusableConversation = status === "completed"
+        && retain
+        && tab.conversationKey
+        && (!tab.connectorIdentity || connectorBound);
+      tab.status = "ready";
+      tab.message = status === "completed"
+        ? "Task completed; page kept for manual review"
+        : status === "failed"
+          ? "Task failed; page kept for manual review"
+          : "Task stopped; page kept for manual review";
+      tab.loading = false;
+      tab.lastHeartbeatAt = Date.now();
+      if (reusableConversation) {
+        tab.connectorBound = connectorBound === true;
+      } else {
+        tab.conversationKey = undefined;
+        tab.connectorIdentity = undefined;
+        tab.connectorBound = false;
+      }
+      this.selectedTabId = tab.id;
+      this.showWindow?.();
+      this.show?.();
+      this.logger.info("browser.tab_preserved_for_review", { tabId: tab.id, traceId, terminalStatus: status });
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor?.();
+      return { cancelledByUser };
     }
     if (status === "completed"
       && retain

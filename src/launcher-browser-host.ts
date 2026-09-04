@@ -357,6 +357,7 @@ export type LauncherTurnActivity =
       status: "completed" | "failed" | "aborted";
       message?: string;
       retain?: boolean;
+      preservePage?: boolean;
       connectorBound?: boolean;
     };
 

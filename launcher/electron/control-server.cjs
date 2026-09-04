@@ -167,6 +167,9 @@ class BrowserControlServer {
       if (body.retain !== undefined && typeof body.retain !== "boolean") {
         throw new Error("retain is invalid");
       }
+      if (body.preservePage !== undefined && typeof body.preservePage !== "boolean") {
+        throw new Error("preservePage is invalid");
+      }
       if (body.connectorBound !== undefined && typeof body.connectorBound !== "boolean") {
         throw new Error("connectorBound is invalid");
       }
@@ -302,6 +305,7 @@ class BrowserControlServer {
           body.message,
           body.retain === true,
           body.connectorBound === true,
+          body.preservePage === true,
         );
         this.logger.info("browser.turn_ended", { traceId: body.traceId, status: body.status });
         writeJson(response, 200, { ok: true, ...release });

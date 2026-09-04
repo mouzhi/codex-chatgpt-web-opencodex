@@ -117,5 +117,18 @@ Minimum acceptance after install or update:
 6. Restart the packaged launcher with `--hidden` and prove the ChatGPT login, tunnel, connector,
    and real tool call survive without another login or credential import.
 
+Provider-only automatic turns keep their terminal ChatGPT page available in the launcher for 30
+minutes so the operator can review or manually preserve a temporary chat. Starting a sixth tab
+evicts the oldest retained page, and the operator can close a retained page earlier. Completed
+Markdown is also written to `logs/final-outputs/<trace>.md` under the isolated provider home, with a
+matching JSON record. If a turn fails after ChatGPT rendered an answer, the best complete DOM
+snapshot is stored with status `failed-recovered`.
+
+ChatGPT's tunneled MCP transport cannot safely hold one tool request for a native multi-minute
+agent wait. The final broker boundary clamps `multi_agent_v1__wait_agent` and
+`multi_agent_v2__wait_agent` to 10-second polling slices; the Web model repeats the same targets
+until they finish. This applies even when a cached connector schema or a gateway call requests a
+longer timeout.
+
 Removing the OpenCodex provider does not delete the Electron login profile or tunnel key. Browser
 state and credentials are removed only through a separate, explicit cleanup operation.

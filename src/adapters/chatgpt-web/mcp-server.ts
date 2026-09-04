@@ -7,6 +7,12 @@ import { VERSION } from "../../version";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
+import {
+  CHATGPT_WEB_AGENT_WAIT_POLL_MS,
+  CHATGPT_WEB_AGENT_WAIT_TOOL_NAMES,
+} from "./tool-transport-policy";
+
+export { CHATGPT_WEB_AGENT_WAIT_POLL_MS } from "./tool-transport-policy";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -27,14 +33,10 @@ const BRIDGE_TOOL_NAMES = new Set([
   "codex_turn_complete",
 ]);
 
-const GATEWAY_AGENT_WAIT_TOOL_NAMES = new Set([
-  "multi_agent_v1__wait_agent",
-  "multi_agent_v2__wait_agent",
-]);
+const GATEWAY_AGENT_WAIT_TOOL_NAMES = CHATGPT_WEB_AGENT_WAIT_TOOL_NAMES;
 
 const turnTokenSchema = z.string().min(20).max(256);
 const jsonArgumentsSchema = z.record(z.string(), z.unknown()).default({});
-export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 10_000;
 // The OpenAI tunnel currently owns a two-minute command-response deadline. The local MCP server
 // must settle first so an abandoned native tool call is returned as an MCP error instead of
 // letting the tunnel tear down and poison its long-lived stdio transport.

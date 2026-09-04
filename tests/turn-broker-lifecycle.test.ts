@@ -319,3 +319,39 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("turn broker clamps every namespaced agent wait before it reaches outer Codex", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-wait-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "turn-long-wait");
+    const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, {
+      method: "claim",
+      token,
+      activityId: "activity_long_wait_1234567890",
+    });
+    const invocation = callTurnBroker(socketPath, {
+      method: "invoke",
+      bindingId: claimed.bindingId,
+      wireName: "multi_agent_v1__wait_agent",
+      arguments: { targets: ["agent_test"], timeout_ms: 600_000 },
+    });
+    const [request] = await broker.nextToolBatch(token);
+    expect(request).toMatchObject({
+      wireName: "multi_agent_v1__wait_agent",
+      arguments: { targets: ["agent_test"], timeout_ms: 10_000 },
+    });
+    broker.completeTool(token, request!.callId, { content: [{ type: "text", text: "timed out" }] });
+    await invocation;
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

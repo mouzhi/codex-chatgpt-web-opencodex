@@ -93,6 +93,8 @@ test("OpenCodex provider purpose persists the secure full config at its fixed lo
   expect(providerConfig(loaded).chatgptWeb).toMatchObject({
     browserHost: "launcher",
     localToolsEnabled: true,
+    preserveTerminalPage: true,
+    finalOutputDirectory: join(root, "logs", "final-outputs"),
   });
 });
 

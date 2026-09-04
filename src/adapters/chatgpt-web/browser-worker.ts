@@ -21,6 +21,7 @@ import {
   ChatGptMarkdownConsistencyError,
   type ChatGptMarkdownSegment,
 } from "./markdown";
+import { persistChatGptFinalOutput } from "./final-output";
 import {
   CHATGPT_WEB_LUNA_MODEL_ID,
   CHATGPT_WEB_MODEL_ID,
@@ -1198,11 +1199,40 @@ export interface ResolvedBrowserConfig {
   browserHostDescriptorPath?: string;
   browserHelperScriptPath?: string;
   browserDiagnosticsPath?: string;
+  finalOutputDirectory?: string;
+  preserveTerminalPage: boolean;
   storageStatePath: string;
   chromeExecutablePath: string;
   turnTimeoutMs?: number;
   headed: boolean;
   autoApproveToolCalls: boolean;
+}
+
+function preserveTerminalOutput(
+  config: ResolvedBrowserConfig,
+  turn: Pick<BrowserTurn, "traceId" | "modelId" | "reasoning">,
+  status: "completed" | "failed-recovered",
+  markdown: string,
+  error?: unknown,
+): void {
+  if (!config.finalOutputDirectory || !markdown.trim()) return;
+  try {
+    const saved = persistChatGptFinalOutput({
+      directory: config.finalOutputDirectory,
+      traceId: turn.traceId,
+      modelId: turn.modelId,
+      reasoning: turn.reasoning,
+      status,
+      markdown,
+      ...(error !== undefined ? { error: error instanceof Error ? error.message : String(error) } : {}),
+    });
+    console.info(`[chatgpt-web] final output preserved status=${status} path=${saved.markdownPath}`);
+  } catch (preservationError) {
+    console.error(
+      `[chatgpt-web] failed to preserve terminal output for ${turn.traceId}:`
+      + ` ${preservationError instanceof Error ? preservationError.message : String(preservationError)}`,
+    );
+  }
 }
 
 export function chatGptTurnIsComplete(state: {
@@ -1828,6 +1858,9 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
   const browserDiagnosticsPath = resolve(expandUserPath(
     configured.browserDiagnosticsPath?.trim() || join(getConfigDir(), "diagnostics", "browser-turns"),
   ));
+  const finalOutputDirectory = configured.finalOutputDirectory?.trim()
+    ? resolve(expandUserPath(configured.finalOutputDirectory.trim()))
+    : undefined;
   const turnTimeoutMs = configured.turnTimeoutMs;
   if (browserHost === "launcher" && !browserHostDescriptorPath) {
     throw new Error("Launcher browser host requires chatgptWeb.browserHostDescriptorPath");
@@ -1854,6 +1887,8 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
     ...(browserHostDescriptorPath ? { browserHostDescriptorPath: resolve(expandUserPath(browserHostDescriptorPath)) } : {}),
     ...(resolvedBrowserHelperScriptPath ? { browserHelperScriptPath: resolvedBrowserHelperScriptPath } : {}),
     browserDiagnosticsPath,
+    ...(finalOutputDirectory ? { finalOutputDirectory } : {}),
+    preserveTerminalPage: configured.preserveTerminalPage === true,
     storageStatePath: resolve(expandUserPath(configured.storageStatePath?.trim() || join(getConfigDir(), "browser", "storage-state.json"))),
     chromeExecutablePath: resolve(expandUserPath(configured.chromeExecutablePath?.trim() || defaultChromeExecutable())),
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
@@ -4074,6 +4109,7 @@ export class ChatGptBrowserWorker {
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
+          ...(this.config.preserveTerminalPage ? { preservePage: true } : {}),
           ...(terminal === "completed" && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
             ? { connectorBound: true }
             : {}),
@@ -4121,6 +4157,7 @@ export class ChatGptBrowserWorker {
     let turnConnection: Browser | undefined;
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
+    let lastRecoverableSegments: ChatGptMarkdownSegment[] = [];
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       const multipartTransactionId = prepared.multipart
@@ -4607,6 +4644,9 @@ export class ChatGptBrowserWorker {
         }
 
         let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
+        if (snapshot.responsePresent && snapshot.markdownSegments.length > 0) {
+          lastRecoverableSegments = snapshot.markdownSegments.map(segment => ({ ...segment }));
+        }
         if (!snapshot.responsePresent) {
           try {
             const rebound = await withChatGptBrowserObservationTimeout(
@@ -4823,6 +4863,7 @@ export class ChatGptBrowserWorker {
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);
       }
       await diagnostics.capture(page, "turn-completed");
+      preserveTerminalOutput(this.config, turn, "completed", finalText);
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} completed`
         + ` (markdownChars=${finalText.length}, domFullScans=${responseDomCache.fullScans ?? 0}, domCacheHits=${responseDomCache.cacheHits ?? 0})`,
@@ -4835,6 +4876,19 @@ export class ChatGptBrowserWorker {
       );
       if (diagnosticPage && !diagnosticPage.isClosed()) {
         await diagnostics.capture(diagnosticPage, "turn-failed", error);
+      }
+      if (lastRecoverableSegments.length > 0) {
+        try {
+          const recovery = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+          recovery.observe(lastRecoverableSegments, 0);
+          const recovered = recovery.finish().markdown;
+          preserveTerminalOutput(this.config, turn, "failed-recovered", recovered, error);
+        } catch (recoveryError) {
+          console.error(
+            `[chatgpt-web] failed to preserve terminal output for ${turn.traceId}:`
+            + ` ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+          );
+        }
       }
       throw error;
     } finally {

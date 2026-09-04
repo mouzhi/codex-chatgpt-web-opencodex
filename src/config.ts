@@ -596,6 +596,10 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       browserInteractionMode: config.browserInteractionMode,
       browserHost: config.browserHost,
       browserHostDescriptorPath: config.browserHostDescriptorPath,
+      ...(config.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE ? {
+        finalOutputDirectory: join(getConfigDir(), "logs", "final-outputs"),
+        preserveTerminalPage: true,
+      } : {}),
       storageStatePath: config.storageStatePath,
       chromeExecutablePath: config.chromeExecutablePath,
       brokerSocketPath: config.brokerSocketPath,

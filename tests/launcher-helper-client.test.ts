@@ -82,6 +82,7 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
     storageStatePath: join(root, "unused-state.json"),
     chromeExecutablePath: join(root, "unused-chrome"),
     turnTimeoutMs: 60_000,
+    preserveTerminalPage: false,
     headed: true,
     autoApproveToolCalls: false,
   };
@@ -140,6 +141,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     storageStatePath: "/durable/unused-state.json",
     chromeExecutablePath: "/durable/unused-chrome",
     turnTimeoutMs: 60_000,
+    preserveTerminalPage: false,
     headed: true,
     autoApproveToolCalls: false,
   });
@@ -216,6 +218,7 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
     storageStatePath: "/durable/unused-state.json",
     chromeExecutablePath: "/durable/unused-chrome",
     turnTimeoutMs: 60_000,
+    preserveTerminalPage: false,
     headed: true,
     autoApproveToolCalls: false,
   });
@@ -262,6 +265,7 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
     storageStatePath: "/durable/unused-state.json",
     chromeExecutablePath: "/durable/unused-chrome",
     turnTimeoutMs: 60_000,
+    preserveTerminalPage: false,
     headed: true,
     autoApproveToolCalls: false,
   });

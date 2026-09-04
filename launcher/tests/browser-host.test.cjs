@@ -2332,6 +2332,57 @@ test("a retained browser tab expires at thirty minutes", () => {
   assert.equal(fixture.turnTabs.size, 0);
 });
 
+test("a requested terminal preview keeps a failed automatic ChatGPT page available", async () => {
+  const throttling = [];
+  let shown = 0;
+  const tab = {
+    id: "tab-failed-preview",
+    surfaceId: "surface-failed-preview",
+    traceId: "trace_failed_preview",
+    helperPid: 777,
+    status: "running",
+    loading: true,
+    view: { webContents: {
+      isDestroyed: () => false,
+      setBackgroundThrottling: enabled => throttling.push(enabled),
+      close() {},
+    } },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[tab.id, tab]]),
+    closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: tab.id,
+    syncViewVisibility() {},
+    writeDescriptor() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    showWindow: () => { shown += 1; },
+    show: () => { shown += 1; },
+    logger: { info() {} },
+  });
+
+  const result = await BrowserHost.prototype.endTurn.call(
+    fixture,
+    tab.traceId,
+    tab.helperPid,
+    "failed",
+    true,
+    "outer result arrived after ChatGPT finished",
+    false,
+    false,
+    true,
+  );
+
+  assert.deepEqual(result, { cancelledByUser: false });
+  assert.equal(fixture.turnTabs.get(tab.id), tab);
+  assert.equal(tab.status, "ready");
+  assert.equal(tab.message, "Task failed; page kept for manual review");
+  assert.equal(Number.isFinite(tab.lastHeartbeatAt), true);
+  assert.deepEqual(throttling, [true]);
+  assert.equal(shown, 2);
+});
+
 test("a completed connector turn without binding is released instead of retained", async () => {
   let closed = false;
   const tab = {
