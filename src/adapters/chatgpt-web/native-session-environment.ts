@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -157,22 +156,7 @@ function parseTurnEnvironment(payload: Record<string, unknown>): NativeCodexTurn
   return { cwd, roots, writableRoots, sandboxType: type, networkAccess };
 }
 
-function messageText(payload: Record<string, unknown>): string | undefined {
-  if (typeof payload.content === "string") return payload.content;
-  if (!Array.isArray(payload.content)) return undefined;
-  const text = payload.content
-    .map(value => record(value)?.text)
-    .filter((value): value is string => typeof value === "string")
-    .join("\n");
-  return text || undefined;
-}
-
-function readExactTurn(
-  path: string,
-  threadId: string,
-  turnId: string,
-  expectedUserText: string,
-): NativeCodexTurnEnvironment | undefined {
+function readExactTurn(path: string, threadId: string, turnId: string): NativeCodexTurnEnvironment | undefined {
   let source: string;
   try {
     const stats = statSync(path);
@@ -183,7 +167,6 @@ function readExactTurn(
   }
 
   let sessionMatches = false;
-  let userRevisionMatches = false;
   const matches: NativeCodexTurnEnvironment[] = [];
   for (const line of source.split(/\r?\n/)) {
     if (!line) continue;
@@ -193,17 +176,11 @@ function readExactTurn(
     const payload = record(item?.payload);
     if (!payload) continue;
     if (item?.type === "session_meta" && payload.id === threadId) sessionMatches = true;
-    if (item?.type === "response_item" && payload.type === "message" && payload.role === "user") {
-      const itemMetadata = record(payload.internal_chat_message_metadata_passthrough);
-      if (itemMetadata?.turn_id === turnId && messageText(payload) === expectedUserText) {
-        userRevisionMatches = true;
-      }
-    }
     if (item?.type !== "turn_context" || payload.turn_id !== turnId) continue;
     const environment = parseTurnEnvironment(payload);
     if (environment) matches.push(environment);
   }
-  if (!sessionMatches || !userRevisionMatches || matches.length === 0) return undefined;
+  if (!sessionMatches || matches.length === 0) return undefined;
   const canonical = JSON.stringify(matches[0]);
   return matches.every(value => JSON.stringify(value) === canonical) ? matches[0] : undefined;
 }
@@ -216,17 +193,14 @@ function readExactTurn(
 export function resolveNativeCodexTurnEnvironment(
   threadId: string,
   turnId: string,
-  expectedUserText: string,
 ): NativeCodexTurnEnvironment | undefined {
-  if (!expectedUserText) return undefined;
   for (const home of sessionHomes()) {
     const path = findSessionPath(home, threadId);
     if (!path) continue;
-    const revisionHash = createHash("sha256").update(expectedUserText).digest("hex");
-    const cacheKey = `${pathIdentity(path)}\n${turnId}\n${revisionHash}`;
+    const cacheKey = `${pathIdentity(path)}\n${turnId}`;
     const cached = turnEnvironmentCache.get(cacheKey);
     if (cached) return cached;
-    const environment = readExactTurn(path, threadId, turnId, expectedUserText);
+    const environment = readExactTurn(path, threadId, turnId);
     if (!environment) continue;
     turnEnvironmentCache.set(cacheKey, environment);
     return environment;

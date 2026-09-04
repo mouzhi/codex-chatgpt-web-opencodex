@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
-import { resolveNativeCodexTurnEnvironment } from "./native-session-environment";
+import { resolveNativeCodexTurnEnvironment, type NativeCodexTurnEnvironment } from "./native-session-environment";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -132,7 +132,8 @@ export function priorChatGptAbortedTurnIds(parsed: CodexParsedRequest): string[]
 export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unknown {
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
-  const revision = latestChatGptTurnUserRevision(parsed, turnId);
+  const revision = latestChatGptTurnUserRevision(parsed, turnId)
+    ?? transientNativeTurnUserRevision(parsed, turnId);
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
   if (revision.turnId !== undefined && revision.turnId !== turnId) {
     throw new Error(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);
@@ -549,6 +550,47 @@ function nonEmptyMetadataString(metadata: Record<string, unknown>, key: string):
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function adjacentTransientEnvironment(input: unknown[], activeUserIndex: number): string | undefined {
+  if (activeUserIndex <= 0) return undefined;
+  const candidate = record(input[activeUserIndex - 1]);
+  if (candidate?.type !== "message" || candidate.role !== "user" || !Array.isArray(candidate.content)) return undefined;
+  const matches = candidate.content
+    .map(part => record(part)?.text)
+    .filter((text): text is string => typeof text === "string")
+    .map(text => text.trim())
+    .filter(text => /^<environment_context>[\s\S]*<\/environment_context>$/.test(text));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function nativeEnvironmentMatchesEnvelope(
+  text: string,
+  environment: NativeCodexTurnEnvironment,
+): boolean {
+  let cwdMatches: string[];
+  try {
+    cwdMatches = environmentCwdMatches(text, environment.roots)
+      .map(value => resolve(decodeXmlText(value.trim())));
+  } catch {
+    return false;
+  }
+  if (cwdMatches.length !== 1 || pathIdentity(cwdMatches[0]!) !== pathIdentity(environment.cwd)) return false;
+
+  const rootMatches = [...text.matchAll(/<workspace_roots>[\s\S]*?<\/workspace_roots>/g)]
+    .flatMap(section => [...section[0].matchAll(/<root>([^<]+)<\/root>/g)]
+      .map(match => decodeXmlText(match[1]!.trim())));
+  if (rootMatches.length === 0 || rootMatches.some(root => !isAbsolute(root))) return false;
+  const envelopeRoots = new Set(rootMatches.map(pathIdentity));
+  const sessionRoots = new Set(environment.roots.map(pathIdentity));
+  if (envelopeRoots.size !== sessionRoots.size
+    || [...envelopeRoots].some(root => !sessionRoots.has(root))) return false;
+  if (sandboxTypeFromEnvironment(text) !== environment.sandboxType) return false;
+
+  const envelopeNetworkAccess = /<network_access>enabled<\/network_access>/i.test(text)
+    || /network access is enabled/i.test(text);
+  return environment.sandboxType === "dangerFullAccess"
+    || envelopeNetworkAccess === environment.networkAccess;
+}
+
 function nativeSessionEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment | undefined {
   const metadata = clientTurnMetadata(parsed);
   if (!metadata || metadata.request_kind !== "turn") return undefined;
@@ -566,21 +608,29 @@ function nativeSessionEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnviro
 
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
-  const activeUser = [...input].reverse().map(record)
-    .find(item => item?.type === "message" && item.role === "user" && !contextualUserMessage(item));
+  let activeUser: Record<string, unknown> | undefined;
+  let activeUserIndex = -1;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (item?.type !== "message" || item.role !== "user" || contextualUserMessage(item)) continue;
+    activeUser = item;
+    activeUserIndex = index;
+    break;
+  }
   if (!activeUser) return undefined;
   const activeTurnId = itemTurnId(activeUser);
   if (activeTurnId !== undefined && activeTurnId !== turnId) return undefined;
-  const activeUserText = rawMessageText(activeUser);
-  if (!activeUserText) return undefined;
+  const environmentEnvelope = adjacentTransientEnvironment(input, activeUserIndex);
+  if (!environmentEnvelope) return undefined;
 
   const workspaces = record(metadata.workspaces);
   if (metadata.workspaces !== undefined && !workspaces) return undefined;
   const metadataRoots = Object.keys(workspaces ?? {});
   if (metadataRoots.some(root => !isAbsolute(root))) return undefined;
 
-  const environment = resolveNativeCodexTurnEnvironment(threadId, turnId, activeUserText);
+  const environment = resolveNativeCodexTurnEnvironment(threadId, turnId);
   if (!environment) return undefined;
+  if (!nativeEnvironmentMatchesEnvelope(environmentEnvelope, environment)) return undefined;
   const metadataSandbox = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
   if (!metadataSandbox) return undefined;
   if (metadataSandbox === "platform") {
@@ -602,6 +652,23 @@ function nativeSessionEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnviro
     sandboxPolicy,
     tools: parsed.context.tools ?? [],
   };
+}
+
+function transientNativeTurnUserRevision(
+  parsed: CodexParsedRequest,
+  expectedTurnId: string,
+): ChatGptTurnUserRevision | undefined {
+  if (!nativeSessionEnvironment(parsed)) return undefined;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (item?.type !== "message" || item.role !== "user" || contextualUserMessage(item)) continue;
+    const messageTurnId = itemTurnId(item);
+    if (messageTurnId !== undefined && messageTurnId !== expectedTurnId) return undefined;
+    return { content: item.content, turnId: expectedTurnId };
+  }
+  return undefined;
 }
 
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
