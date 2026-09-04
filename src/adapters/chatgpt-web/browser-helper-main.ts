@@ -17,6 +17,8 @@ interface RunMessage {
     appName: string;
     browserHostDescriptorPath: string;
     browserDiagnosticsPath?: string;
+    finalOutputDirectory?: string;
+    preserveTerminalPage: boolean;
     turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
   };
@@ -177,6 +179,12 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.externalProgress !== undefined && typeof message.turn.externalProgress !== "boolean") {
     throw new Error("Browser helper external progress flag is invalid");
   }
+  if (message.config.finalOutputDirectory !== undefined && typeof message.config.finalOutputDirectory !== "string") {
+    throw new Error("Browser helper final-output directory is invalid");
+  }
+  if (typeof message.config.preserveTerminalPage !== "boolean") {
+    throw new Error("Browser helper terminal-page preservation flag is invalid");
+  }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -185,6 +193,8 @@ async function run(message: RunMessage): Promise<void> {
       browserHost: "launcher",
       browserHostDescriptorPath: message.config.browserHostDescriptorPath,
       browserDiagnosticsPath: message.config.browserDiagnosticsPath,
+      finalOutputDirectory: message.config.finalOutputDirectory,
+      preserveTerminalPage: message.config.preserveTerminalPage,
       turnTimeoutMs: message.config.turnTimeoutMs,
       autoApproveToolCalls: message.config.autoApproveToolCalls,
     },

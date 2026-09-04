@@ -138,10 +138,11 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     appName: "Codex Native2 DEV",
     browserHost: "launcher",
     browserHostDescriptorPath: "/durable/launcher.json",
+    finalOutputDirectory: "/durable/final-outputs",
     storageStatePath: "/durable/unused-state.json",
     chromeExecutablePath: "/durable/unused-chrome",
     turnTimeoutMs: 60_000,
-    preserveTerminalPage: false,
+    preserveTerminalPage: true,
     headed: true,
     autoApproveToolCalls: false,
   });
@@ -193,6 +194,10 @@ test("launcher helper protocol preserves multipart context and the compaction fl
 
   expect(sent[0]).toMatchObject({
     type: "run",
+    config: {
+      finalOutputDirectory: "/durable/final-outputs",
+      preserveTerminalPage: true,
+    },
     turn: {
       compaction: true,
     },

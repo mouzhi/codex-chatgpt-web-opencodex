@@ -256,6 +256,8 @@ export class LauncherBrowserHelperClient {
             appName: this.config.appName,
             browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
             browserDiagnosticsPath: this.config.browserDiagnosticsPath,
+            finalOutputDirectory: this.config.finalOutputDirectory,
+            preserveTerminalPage: this.config.preserveTerminalPage,
             turnTimeoutMs: this.config.turnTimeoutMs,
             autoApproveToolCalls: this.config.autoApproveToolCalls,
           },
