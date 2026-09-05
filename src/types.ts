@@ -276,6 +276,8 @@ export interface CodexProviderConfig {
     finalOutputDirectory?: string;
     /** Keep the terminal temporary-chat page visible for manual review before its 30-minute TTL. */
     preserveTerminalPage?: boolean;
+    /** Native Codex rollout authority; separate from the provider's setup-only CODEX_HOME. */
+    nativeCodexHome?: string;
     /** Playwright storage-state file created by the explicit browser login. */
     storageStatePath?: string;
     /** System Chrome executable. The runtime never downloads a browser. */

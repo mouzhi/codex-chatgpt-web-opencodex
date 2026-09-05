@@ -32,6 +32,7 @@ const MAX_BROWSER_VIEW_DIMENSION = 16_384;
 const MAX_BROWSER_TABS = 5;
 const MAX_CANCELLED_TURN_TRACES = 256;
 const MANUAL_SUBMIT_TIMEOUT_MS = 30_000;
+const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
 const MAX_MANUAL_TERMINAL_SIGNALS = 256;
 const MAX_MANUAL_PROMPT_CHARS = 1_000_000;
 const INTERACTION_MODE_CHANGE_OPERATION = "browser interaction mode change";
@@ -354,6 +355,7 @@ class BrowserHost {
     this.closedTurnOwners = new Map();
     this.userCancelledTurnOwners = new Map();
     this.manualTerminalSignals = new Map();
+    this.manualCompletionSignals = new Map();
     this.interactionModeOverride = null;
     this.selectedTabId = "home";
     this.manualOperation = null;
@@ -460,23 +462,24 @@ class BrowserHost {
     this.interactionModeOverride = mode;
     this.manualOperation = INTERACTION_MODE_CHANGE_OPERATION;
     try {
-      const result = await action();
-      this.resetTurnTabsForInteractionModeChange();
+      let browserCommitted = false;
+      const commitBrowserChange = async () => {
+        if (browserCommitted) throw new Error("Browser interaction mode change was committed more than once");
+        // The runtime setup invokes this callback inside its own rollback boundary. Existing tabs
+        // are mode-bound and remain valid history, so the browser commit has no irreversible tab
+        // mutation that could survive a runtime rollback.
+        if (mode === "automatic") await this.markOwnedSurface();
+        browserCommitted = true;
+      };
+      const result = await action(commitBrowserChange);
+      if (!browserCommitted) {
+        throw new Error("Runtime setup returned before committing the browser interaction mode");
+      }
       return result;
     } finally {
       this.manualOperation = null;
       this.interactionModeOverride = null;
     }
-  }
-
-  resetTurnTabsForInteractionModeChange() {
-    this.assertTurnTabsCanResetForInteractionModeChange();
-    for (const tab of [...this.turnTabs.values()]) this.removeTurnTab(tab, false);
-    if (this.turnTabs.size !== 0) {
-      throw new Error("Browser tabs could not be isolated for the interaction-mode change");
-    }
-    this.selectedTabId = "home";
-    return this.snapshot();
   }
 
   browserInteractionMode() {
@@ -519,7 +522,7 @@ class BrowserHost {
 
   async createTurnTab(traceId, helperPid, conversationKey, connectorIdentity) {
     if (this.turnTabs.size >= MAX_BROWSER_TABS
-      && !BrowserHost.prototype.evictOldestRetainedTurnTab.call(this)) {
+      && !BrowserHost.prototype.evictOldestReclaimableTurnTab.call(this)) {
       throw new Error(
         `ChatGPT Web already has ${MAX_BROWSER_TABS} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
       );
@@ -555,6 +558,7 @@ class BrowserHost {
       url: IDLE_BROWSER_URL,
       loading: true,
       message: "ChatGPT is working",
+      interactionMode: "automatic",
       initializingSurface: true,
       bootstrapReady: false,
       rendererReady: false,
@@ -587,9 +591,9 @@ class BrowserHost {
     return tab;
   }
 
-  createManualTurnTab(traceId, helperPid, conversationKey, prompt) {
+  createManualTurnTab(traceId, helperPid, conversationKey, prompt, manualSubmitTimeoutMs) {
     if (this.turnTabs.size >= MAX_BROWSER_TABS
-      && !BrowserHost.prototype.evictOldestRetainedTurnTab.call(this)) {
+      && !BrowserHost.prototype.evictOldestReclaimableTurnTab.call(this)) {
       throw new Error(
         `ChatGPT Web already has ${MAX_BROWSER_TABS} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
       );
@@ -626,7 +630,8 @@ class BrowserHost {
       message: "Paste the copied prompt, add any images yourself because Zero Risk cannot transfer them, choose a model and effort, then press Sent",
       interactionMode: "manual",
       manualState: "awaiting-user",
-      manualDeadlineAt: Date.now() + MANUAL_SUBMIT_TIMEOUT_MS,
+      manualSubmitTimeoutMs,
+      manualDeadlineAt: Date.now() + manualSubmitTimeoutMs,
       manualDeadlineTimer: null,
       manualWaiters: new Set(),
       manualTerminalWaiters: new Set(),
@@ -694,6 +699,19 @@ class BrowserHost {
     if (!retained) return false;
     this.removeTurnTab(retained, false);
     return true;
+  }
+
+  evictOldestReclaimableTurnTab() {
+    const terminalManual = [...this.turnTabs.values()]
+      .filter(tab => tab.interactionMode === "manual"
+        && tab.status === "error"
+        && ["timed-out", "failed", "cancelled"].includes(tab.manualState))
+      .sort((left, right) => (left.lastHeartbeatAt ?? 0) - (right.lastHeartbeatAt ?? 0))[0];
+    if (terminalManual) {
+      this.removeTurnTab(terminalManual, false);
+      return true;
+    }
+    return BrowserHost.prototype.evictOldestRetainedTurnTab.call(this);
   }
 
   zoomShell(action) {
@@ -1810,12 +1828,23 @@ class BrowserHost {
     }
   }
 
+  rememberManualCompletion(traceId, helperPid) {
+    this.manualCompletionSignals.delete(traceId);
+    this.manualCompletionSignals.set(traceId, { helperPid });
+    while (this.manualCompletionSignals.size > MAX_MANUAL_TERMINAL_SIGNALS) {
+      const oldest = this.manualCompletionSignals.keys().next();
+      if (oldest.done) break;
+      this.manualCompletionSignals.delete(oldest.value);
+    }
+  }
+
   signalManualTerminal(tab, status) {
     if (tab.interactionMode !== "manual") return;
     if (tab.manualDeadlineTimer) clearTimeout(tab.manualDeadlineTimer);
     tab.manualDeadlineTimer = null;
     tab.manualDeadlineAt = null;
     tab.manualState = status === "timeout" ? "timed-out" : status;
+    tab.lastHeartbeatAt = Date.now();
     tab.prompt = null;
     tab.promptDigest = null;
     this.rememberManualTerminal(tab.traceId, tab.helperPid, status);
@@ -1835,10 +1864,11 @@ class BrowserHost {
       if (this.turnTabs.get(tab.id) !== tab
         || !["awaiting-user", "sent"].includes(tab.manualState)) return;
       const waitingForConnector = tab.manualState === "sent";
+      const timeoutSeconds = Math.round(tab.manualSubmitTimeoutMs / 1_000);
       tab.status = "error";
       tab.message = waitingForConnector
-        ? "ChatGPT did not start through the Codex harness within 30 seconds"
-        : "Prompt submission was not confirmed within 30 seconds";
+        ? `ChatGPT did not start through the Codex harness within ${timeoutSeconds} seconds`
+        : `Prompt submission was not confirmed within ${timeoutSeconds} seconds`;
       this.signalManualTerminal(tab, "timeout");
       this.publishState?.(this.snapshot());
       this.logger.warn("browser.manual_turn_timed_out", {
@@ -1857,7 +1887,7 @@ class BrowserHost {
     this.clipboard.writeText(prompt);
   }
 
-  beginManualTurn(traceId, helperPid, prompt, conversationKey, resumePrompt) {
+  beginManualTurn(traceId, helperPid, prompt, conversationKey, resumePrompt, compaction = false) {
     if (this.manualOperation) {
       throw new Error(`ChatGPT browser is busy with ${this.manualOperation}`);
     }
@@ -1869,6 +1899,16 @@ class BrowserHost {
         || resumePrompt.length < 1
         || resumePrompt.length > MAX_MANUAL_PROMPT_CHARS)) {
       throw new Error(`Manual resume prompt must contain between 1 and ${MAX_MANUAL_PROMPT_CHARS} characters`);
+    }
+    if (typeof compaction !== "boolean") throw new Error("Manual compaction flag must be boolean");
+    const manualSubmitTimeoutMs = compaction
+      ? MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS
+      : MANUAL_SUBMIT_TIMEOUT_MS;
+    const completion = this.manualCompletionSignals.get(traceId);
+    if (completion) {
+      throw new Error(completion.helperPid === helperPid
+        ? `Zero Risk turn ${traceId} is already completed`
+        : `Zero Risk turn ${traceId} is owned by another process`);
     }
     const terminal = this.manualTerminalSignals.get(traceId);
     if (terminal?.helperPid === helperPid) {
@@ -1895,6 +1935,9 @@ class BrowserHost {
         );
         error.code = "manual_turn_owner_lost";
         throw error;
+      }
+      if (sameTrace.manualSubmitTimeoutMs !== manualSubmitTimeoutMs) {
+        throw new Error(`Zero Risk turn ${traceId} was retried with a different compaction mode`);
       }
       const retryPrompt = sameTrace.manualConversationReused ? resumePrompt : prompt;
       if (typeof retryPrompt !== "string"
@@ -1935,14 +1978,21 @@ class BrowserHost {
       tab.loading = false;
       tab.message = "Paste the copied prompt, add any images yourself because Zero Risk cannot transfer them, choose a model and effort, then press Sent";
       tab.manualState = "awaiting-user";
-      tab.manualDeadlineAt = Date.now() + MANUAL_SUBMIT_TIMEOUT_MS;
+      tab.manualSubmitTimeoutMs = manualSubmitTimeoutMs;
+      tab.manualDeadlineAt = Date.now() + manualSubmitTimeoutMs;
       tab.prompt = resumePrompt;
       tab.promptDigest = manualPromptDigest(resumePrompt);
       tab.manualConversationReused = true;
       tab.sentAt = null;
       tab.manualTerminalResolutionSuppressed = false;
     } else {
-      tab = this.createManualTurnTab(traceId, helperPid, conversationKey, prompt);
+      tab = this.createManualTurnTab(
+        traceId,
+        helperPid,
+        conversationKey,
+        prompt,
+        manualSubmitTimeoutMs,
+      );
       try {
         this.writeManualPrompt(prompt);
       } catch (error) {
@@ -2042,7 +2092,7 @@ class BrowserHost {
     }
     if (tab.manualDeadlineTimer) clearTimeout(tab.manualDeadlineTimer);
     tab.manualState = "sent";
-    tab.manualDeadlineAt = Date.now() + MANUAL_SUBMIT_TIMEOUT_MS;
+    tab.manualDeadlineAt = Date.now() + tab.manualSubmitTimeoutMs;
     tab.sentAt = new Date().toISOString();
     tab.prompt = null;
     tab.message = "Prompt sent; waiting for ChatGPT to start through the Codex harness";
@@ -2073,11 +2123,17 @@ class BrowserHost {
   }
 
   endManualTurn(traceId, helperPid, status, retain = false) {
+    const completion = this.manualCompletionSignals.get(traceId);
+    if (completion?.helperPid === helperPid) return { cancelledByUser: false };
     const tab = [...this.turnTabs.values()].find(candidate => candidate.traceId === traceId);
     if (!tab || tab.interactionMode !== "manual" || tab.helperPid !== helperPid) {
       const terminal = this.manualTerminalSignals.get(traceId);
       if (terminal?.helperPid === helperPid) return { cancelledByUser: terminal.status === "cancelled" };
       throw new Error(`Zero Risk turn ownership mismatch: no browser tab owns ${traceId}`);
+    }
+    if (tab.manualState === "completed") {
+      this.rememberManualCompletion(traceId, helperPid);
+      return { cancelledByUser: false };
     }
     if (status === "completed" && tab.manualState !== "sent" && tab.manualState !== "running") {
       throw new Error(`Zero Risk turn ${traceId} cannot complete before Sent confirmation`);
@@ -2093,6 +2149,7 @@ class BrowserHost {
       tab.message = "Task completed";
       tab.loading = false;
       tab.lastHeartbeatAt = Date.now();
+      this.rememberManualCompletion(traceId, helperPid);
       this.publishState?.(this.snapshot());
       return { cancelledByUser: false };
     }
@@ -2105,6 +2162,7 @@ class BrowserHost {
       tab.promptDigest = null;
       tab.manualState = "completed";
       tab.manualTerminalResolutionSuppressed = true;
+      this.rememberManualCompletion(traceId, helperPid);
     } else {
       this.signalManualTerminal(tab, status === "aborted" ? "cancelled" : status);
     }
@@ -2137,12 +2195,16 @@ class BrowserHost {
       throw new BrowserTurnCancelledError(traceId);
     }
     const sameTrace = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
+    if (sameTrace && sameTrace.interactionMode !== "automatic") {
+      throw new Error(`Browser turn ${traceId} already belongs to Zero Risk interaction`);
+    }
     if (sameTrace && (sameTrace.conversationKey !== conversationKey
       || sameTrace.connectorIdentity !== connectorIdentity)) {
       throw new Error(`ChatGPT browser turn ${traceId} conversation metadata does not match its owned tab`);
     }
     const retainedMatches = conversationKey ? [...this.turnTabs.values()].filter((tab) => (
-      tab.status === "ready"
+      tab.interactionMode === "automatic"
+      && tab.status === "ready"
       && tab.conversationKey === conversationKey
       && tab.connectorIdentity === connectorIdentity
       && (!connectorIdentity || tab.connectorBound === true)
@@ -2704,15 +2766,25 @@ class BrowserHost {
     const connectorName = validateConnectorName(appName);
     this.setState({ status: "testing", message: "Checking ChatGPT connector" });
     await this.refreshChatGptHomeDocument();
-    const result = await this.verifyConnectorWithBrowserHelper({
-      helper: this.helper,
-      descriptorPath: this.descriptorPath,
-      appName: connectorName,
-      logger: this.logger,
-    });
-    this.logger.info("connector.verified", { appName: connectorName });
-    this.setState({ status: "ready", message: "ChatGPT connector is available", authenticated: true });
-    return result;
+    try {
+      const result = await this.verifyConnectorWithBrowserHelper({
+        helper: this.helper,
+        descriptorPath: this.descriptorPath,
+        appName: connectorName,
+        logger: this.logger,
+      });
+      this.logger.info("connector.verified", { appName: connectorName });
+      this.setState({ status: "ready", message: "ChatGPT connector is available", authenticated: true });
+      return result;
+    } catch (error) {
+      this.logger.error("connector.verification_failed", {
+        appName: connectorName,
+        ...(error && typeof error.operationId === "string" ? { traceId: error.operationId } : {}),
+        errorName: error instanceof Error ? error.name : "Error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   async inspectSession(detectCapabilities = false) {
@@ -2852,6 +2924,7 @@ module.exports = {
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_SUBMIT_TIMEOUT_MS,
+  MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
   navigationErrorForLog,
   navigationOriginForLog,
   TEMPORARY_CHAT_URL,

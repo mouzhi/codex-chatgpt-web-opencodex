@@ -19,13 +19,15 @@ const {
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
+  MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
   MANUAL_SUBMIT_TIMEOUT_MS,
   navigationErrorForLog,
   navigationOriginForLog,
 } = require("../electron/browser-host.cjs");
 
-test("manual prompt handoff has one thirty-second user deadline", () => {
+test("manual prompt handoff keeps ordinary turns at thirty seconds and compaction at two minutes", () => {
   assert.equal(MANUAL_SUBMIT_TIMEOUT_MS, 30_000);
+  assert.equal(MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS, 120_000);
 });
 
 test("Electron and Bun agree on the exact launcher idle surface", () => {
@@ -1377,12 +1379,46 @@ test("connector verification is effort-independent and works while the browser s
   );
 });
 
+test("connector verification records the helper failure in launcher diagnostics", async () => {
+  const calls = [];
+  const failure = new Error("ChatGPT connector proof did not leave a verified empty composer");
+  failure.name = "ChatGptPersistentBrowserStateError";
+  failure.operationId = "verify-contract-trace";
+  const fixture = {
+    helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
+    descriptorPath: "/runtime/launcher-browser.json",
+    logger: {
+      info: (event, detail) => calls.push(["info", event, detail]),
+      error: (event, detail) => calls.push(["error", event, detail]),
+    },
+    setState: (patch) => calls.push(["state", patch]),
+    refreshChatGptHomeDocument: async () => calls.push(["refresh"]),
+    verifyConnectorWithBrowserHelper: async () => { throw failure; },
+  };
+
+  await assert.rejects(
+    BrowserHost.prototype.runConnectorVerification.call(fixture, "Codex Native2"),
+    failure,
+  );
+  assert.deepEqual(calls.find(call => call[1] === "connector.verification_failed"), [
+    "error",
+    "connector.verification_failed",
+    {
+      appName: "Codex Native2",
+      traceId: "verify-contract-trace",
+      errorName: "ChatGptPersistentBrowserStateError",
+      message: "ChatGPT connector proof did not leave a verified empty composer",
+    },
+  ]);
+});
+
 test("a live helper retains exclusive ownership of its running turn", async () => {
   const tab = {
     id: "tab-live-owner",
     traceId: "trace_live_owner",
     helperPid: process.pid,
     status: "running",
+    interactionMode: "automatic",
   };
   await assert.rejects(
     BrowserHost.prototype.beginTurn.call({
@@ -1402,6 +1438,7 @@ test("a replacement helper takes over only after the previous owner exited", asy
     traceId: "trace_dead_owner",
     helperPid: deadPid,
     status: "running",
+    interactionMode: "automatic",
     loading: true,
     message: "ChatGPT is working",
     view: {
@@ -2003,6 +2040,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
     conversationKey,
     connectorIdentity: "Codex Native2",
     connectorBound: true,
+    interactionMode: "automatic",
     helperPid: 111,
     status: "ready",
     loading: false,
@@ -2063,6 +2101,7 @@ test("a retained conversation is not reused for a different connector identity",
     conversationKey,
     connectorIdentity: "Codex Native2",
     connectorBound: true,
+    interactionMode: "automatic",
   };
   const created = { id: "fresh", surfaceId: "surface-fresh" };
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
@@ -2097,6 +2136,58 @@ test("a retained conversation is not reused for a different connector identity",
   assert.equal(retained.status, "ready");
 });
 
+test("an Automatic turn never reuses a retained Zero Risk conversation", async () => {
+  const conversationKey = "m".repeat(64);
+  const retained = {
+    id: "manual-retained",
+    traceId: "trace_manual",
+    status: "ready",
+    interactionMode: "manual",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[retained.id, retained]]),
+    userCancelledTurnOwners: new Map(),
+    createTurnTab: () => ({ id: "automatic-fresh", surfaceId: "surface-fresh" }),
+    syncViewVisibility() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    logger: { info() {} },
+  });
+
+  assert.deepEqual(
+    await BrowserHost.prototype.beginTurn.call(
+      fixture,
+      "trace_automatic",
+      false,
+      222,
+      conversationKey,
+      "Codex Native2",
+    ),
+    {
+      surfaceId: "surface-fresh",
+      tabId: "automatic-fresh",
+      reused: false,
+      connectorBound: false,
+    },
+  );
+  assert.equal(retained.status, "ready");
+  await assert.rejects(
+    BrowserHost.prototype.beginTurn.call(
+      fixture,
+      "trace_manual",
+      false,
+      222,
+      conversationKey,
+      "Codex Native2",
+    ),
+    /already belongs to Zero Risk interaction/,
+  );
+});
+
 test("a connector conversation is not reused until its connector was bound", async () => {
   const conversationKey = "c".repeat(64);
   const retained = {
@@ -2106,6 +2197,7 @@ test("a connector conversation is not reused until its connector was bound", asy
     conversationKey,
     connectorIdentity: "Codex Native2",
     connectorBound: false,
+    interactionMode: "automatic",
   };
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     manualOperation: null,
@@ -2478,6 +2570,7 @@ function manualTurnFixture() {
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map(),
     manualTerminalSignals: new Map(),
+    manualCompletionSignals: new Map(),
     manualOperation: null,
     selectedTabId: "home",
     clipboard: { writeText: value => clipboardWrites.push(value) },
@@ -2491,7 +2584,7 @@ function manualTurnFixture() {
     showWindow() {},
     show() {},
     writeDescriptor() {},
-    createManualTurnTab(traceId, helperPid, conversationKey, prompt) {
+    createManualTurnTab(traceId, helperPid, conversationKey, prompt, manualSubmitTimeoutMs) {
       const tab = {
         id: `manual-${this.turnTabs.size + 1}`,
         traceId,
@@ -2502,7 +2595,8 @@ function manualTurnFixture() {
         loading: false,
         label: `ChatGPT ${this.turnTabs.size + 1}`,
         manualState: "awaiting-user",
-        manualDeadlineAt: Date.now() + 30_000,
+        manualSubmitTimeoutMs,
+        manualDeadlineAt: Date.now() + manualSubmitTimeoutMs,
         manualDeadlineTimer: null,
         manualWaiters: new Set(),
         manualTerminalWaiters: new Set(),
@@ -2533,6 +2627,87 @@ test("manual start is idempotent and never exposes its private prompt in snapsho
   assert.deepEqual(clipboardWrites, ["private prompt"]);
   assert.equal(JSON.stringify(fixture.snapshot()).includes("private prompt"), false);
   for (const tab of fixture.turnTabs.values()) clearTimeout(tab.manualDeadlineTimer);
+});
+
+test("manual compaction alone keeps both pre-start deadlines open for two minutes", () => {
+  const { fixture } = manualTurnFixture();
+  const ordinary = fixture.beginManualTurn("manual_ordinary", process.pid, "ordinary prompt");
+  const compaction = fixture.beginManualTurn(
+    "manual_compaction",
+    process.pid,
+    "compaction prompt",
+    undefined,
+    undefined,
+    true,
+  );
+  const ordinaryTab = fixture.turnTabs.get(ordinary.tabId);
+  const compactionTab = fixture.turnTabs.get(compaction.tabId);
+  assert.equal(ordinaryTab.manualSubmitTimeoutMs, 30_000);
+  assert.equal(compactionTab.manualSubmitTimeoutMs, 120_000);
+
+  fixture.confirmManualSent(compaction.tabId);
+  assert.ok(compactionTab.manualDeadlineAt - Date.now() > 119_000);
+  assert.ok(compactionTab.manualDeadlineAt - Date.now() <= 120_000);
+
+  for (const tab of fixture.turnTabs.values()) clearTimeout(tab.manualDeadlineTimer);
+});
+
+test("manual completion is idempotent and cannot be downgraded after a lost acknowledgement", () => {
+  const { fixture } = manualTurnFixture();
+  const retained = fixture.beginManualTurn(
+    "manual_completed_retained",
+    process.pid,
+    "private prompt",
+    "a".repeat(64),
+  );
+  fixture.confirmManualSent(retained.tabId);
+  fixture.markManualTurnStarted("manual_completed_retained", process.pid);
+  assert.deepEqual(
+    fixture.endManualTurn("manual_completed_retained", process.pid, "completed", true),
+    { cancelledByUser: false },
+  );
+  assert.deepEqual(
+    fixture.endManualTurn("manual_completed_retained", process.pid, "failed", false),
+    { cancelledByUser: false },
+  );
+  assert.equal(fixture.turnTabs.get(retained.tabId).status, "ready");
+  assert.equal(fixture.turnTabs.get(retained.tabId).manualState, "completed");
+
+  const released = fixture.beginManualTurn(
+    "manual_completed_released",
+    process.pid,
+    "another private prompt",
+  );
+  fixture.confirmManualSent(released.tabId);
+  fixture.markManualTurnStarted("manual_completed_released", process.pid);
+  fixture.endManualTurn("manual_completed_released", process.pid, "completed", false);
+  assert.equal(fixture.turnTabs.has(released.tabId), false);
+  assert.deepEqual(
+    fixture.endManualTurn("manual_completed_released", process.pid, "failed", false),
+    { cancelledByUser: false },
+  );
+});
+
+test("terminal Zero Risk tabs are reclaimed before retained conversations", () => {
+  const { fixture } = manualTurnFixture();
+  fixture.turnTabs.set("manual-timeout", {
+    id: "manual-timeout",
+    interactionMode: "manual",
+    status: "error",
+    manualState: "timed-out",
+    lastHeartbeatAt: 1,
+  });
+  fixture.turnTabs.set("manual-retained", {
+    id: "manual-retained",
+    interactionMode: "manual",
+    status: "ready",
+    manualState: "completed",
+    lastHeartbeatAt: 0,
+  });
+
+  assert.equal(fixture.evictOldestReclaimableTurnTab(), true);
+  assert.equal(fixture.turnTabs.has("manual-timeout"), false);
+  assert.equal(fixture.turnTabs.has("manual-retained"), true);
 });
 
 test("a retained manual chat copies only its incremental resume prompt", () => {
@@ -2698,10 +2873,10 @@ test("manual browser snapshots never read or expose page-controlled titles", () 
   assert.equal(pageTitleReads, 0);
 });
 
-test("interaction-mode changes preserve retained tabs on failure and isolate them after commit", async () => {
+test("interaction-mode changes preserve mode-bound retained tabs on failure and after commit", async () => {
   const retainedAutomatic = { id: "automatic-ready", status: "ready" };
   const retainedManual = { id: "manual-ready", status: "ready", interactionMode: "manual" };
-  const removed = [];
+  let ownershipMarks = 0;
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     getBrowserInteractionMode: () => "manual",
     interactionModeOverride: null,
@@ -2711,11 +2886,7 @@ test("interaction-mode changes preserve retained tabs on failure and isolate the
       [retainedManual.id, retainedManual],
     ]),
     selectedTabId: retainedAutomatic.id,
-    removeTurnTab(tab, abortRunning) {
-      assert.equal(abortRunning, false);
-      removed.push(tab.id);
-      this.turnTabs.delete(tab.id);
-    },
+    markOwnedSurface: async () => { ownershipMarks += 1; },
     snapshot: () => ({ activeTabId: "home" }),
   });
 
@@ -2727,16 +2898,20 @@ test("interaction-mode changes preserve retained tabs on failure and isolate the
     }),
     /runtime setup failed/,
   );
-  assert.deepEqual(removed, []);
   assert.equal(fixture.turnTabs.size, 2);
   assert.equal(fixture.currentOperation(), null);
   assert.equal(fixture.browserInteractionMode(), "manual");
+  assert.equal(ownershipMarks, 0);
 
-  const result = await fixture.withInteractionModeChange("automatic", async () => "configured");
+  const result = await fixture.withInteractionModeChange("automatic", async commit => {
+    await commit();
+    return "configured";
+  });
   assert.equal(result, "configured");
-  assert.deepEqual(removed, [retainedAutomatic.id, retainedManual.id]);
-  assert.equal(fixture.selectedTabId, "home");
+  assert.deepEqual([...fixture.turnTabs.keys()], [retainedAutomatic.id, retainedManual.id]);
+  assert.equal(fixture.selectedTabId, retainedAutomatic.id);
   assert.equal(fixture.currentOperation(), null);
+  assert.equal(ownershipMarks, 1);
 
   const live = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map([["running", { id: "running", status: "running" }]]),
@@ -2746,6 +2921,59 @@ test("interaction-mode changes preserve retained tabs on failure and isolate the
     () => live.assertTurnTabsCanResetForInteractionModeChange(),
     /Finish or cancel active ChatGPT turns/,
   );
+});
+
+test("switching from Zero Risk to Automatic marks the already-loaded primary surface", async () => {
+  const scripts = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    getBrowserInteractionMode: () => "manual",
+    interactionModeOverride: null,
+    manualOperation: null,
+    turnTabs: new Map(),
+    selectedTabId: "home",
+    surfaceId: "automatic-primary-surface",
+    view: { webContents: {
+      executeJavaScript: async script => { scripts.push(script); },
+    } },
+    snapshot: () => ({ activeTabId: "home" }),
+  });
+
+  assert.equal(await fixture.withInteractionModeChange("automatic", async commit => {
+    await commit();
+    return "configured";
+  }), "configured");
+  assert.equal(scripts.length, 1);
+  assert.match(scripts[0], /__CODEX_WEB_GPT_SURFACE_ID__/);
+  assert.match(scripts[0], /automatic-primary-surface/);
+});
+
+test("a failed Automatic ownership proof stays inside the runtime rollback boundary", async () => {
+  const retained = { id: "retained-before-failed-switch", status: "ready" };
+  let rollbackBoundaryObserved = false;
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    getBrowserInteractionMode: () => "manual",
+    interactionModeOverride: null,
+    manualOperation: null,
+    turnTabs: new Map([[retained.id, retained]]),
+    selectedTabId: retained.id,
+    markOwnedSurface: async () => { throw new Error("surface ownership failed"); },
+  });
+
+  await assert.rejects(
+    fixture.withInteractionModeChange("automatic", async commit => {
+      try {
+        await commit();
+      } catch (error) {
+        // RuntimeHost executes this callback before leaving runSetup's rollback-protected try.
+        rollbackBoundaryObserved = true;
+        throw error;
+      }
+    }),
+    /surface ownership failed/,
+  );
+  assert.equal(rollbackBoundaryObserved, true);
+  assert.deepEqual([...fixture.turnTabs.keys()], [retained.id]);
+  assert.equal(fixture.browserInteractionMode(), "manual");
 });
 
 test("Zero Risk reveal navigates without inspecting the ChatGPT DOM", async () => {

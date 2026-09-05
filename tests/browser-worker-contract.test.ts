@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -75,10 +77,19 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   const promptAttached = runBrowserTurn.indexOf('await diagnostics.capture(page, "prompt-attachment-complete")');
   const finalEffortSelected = runBrowserTurn.indexOf('"final_part_effort_selection"');
   const finalSend = runBrowserTurn.indexOf("const finalSubmissionEvidence");
+  const multipartSend = runBrowserTurn.indexOf("const evidence = await this.runStage(");
+  const multipartAccepted = runBrowserTurn.indexOf("multipart part ${index + 1}/${prepared.multipart.parts.length} submission accepted evidence=${evidence}", multipartSend);
+  const multipartResponse = runBrowserTurn.indexOf("const responseTurn = await this.waitForNewAssistantTurn(", multipartSend);
+  const finalAccepted = runBrowserTurn.indexOf("submission accepted evidence=${finalSubmissionEvidence}", finalSend);
+  const finalResponse = runBrowserTurn.indexOf("let responseTurn = await this.waitForNewAssistantTurn(", finalSend);
   expect(promptAttached).toBeGreaterThan(-1);
   expect(finalEffortSelected).toBeGreaterThan(-1);
   expect(promptAttached).toBeGreaterThan(finalEffortSelected);
   expect(finalSend).toBeGreaterThan(promptAttached);
+  expect(multipartAccepted).toBeGreaterThan(multipartSend);
+  expect(multipartAccepted).toBeLessThan(multipartResponse);
+  expect(finalAccepted).toBeGreaterThan(finalSend);
+  expect(finalAccepted).toBeLessThan(finalResponse);
   expect(runBrowserTurn.slice(finalEffortSelected, promptAttached)).toContain(
     "this.selectModelAndEffort(",
   );
@@ -1306,6 +1317,31 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   expect(keys).toEqual(["ArrowDown", "ArrowDown", "Enter"]);
 });
 
+test("repeated connector verification reuses its selected pill before clearing the composer", async () => {
+  let fillCalls = 0;
+  const selectedComposer = {
+    fill: async () => { fillCalls += 1; },
+  };
+  const page = {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({ exactConnectorLabel: true }),
+    locator: () => ({ filter: () => ({}) }),
+  };
+  const checkpoints: string[] = [];
+  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown, capture?: (checkpoint: string) => Promise<void>): Promise<unknown>;
+  }).selectConnector;
+
+  await expect(selectConnector.call({
+    config: { appName: "Codex Native2 DEV" },
+    activeComposer: async () => selectedComposer,
+    connectorIsSelected: async () => true,
+  }, page, async checkpoint => { checkpoints.push(checkpoint); })).resolves.toBe(selectedComposer);
+
+  expect(fillCalls).toBe(0);
+  expect(checkpoints).toEqual(["personalization-already-enabled", "connector-already-selected"]);
+});
+
 test("connector selection retriggers the complete mention after a fresh-page hydration miss", async () => {
   const calls: string[] = [];
   let menuAttempt = 0;
@@ -1333,7 +1369,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
   };
   const initialComposer = {
     fill: async () => { calls.push("clear"); },
-    focus: async () => { calls.push("focus"); },
+    focus: async (_options?: { signal?: AbortSignal }) => { calls.push("focus"); },
     pressSequentially: async (value: string) => {
       expect(value).toBe("@codex");
       calls.push("type");
@@ -1377,6 +1413,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
 
 test("connector verification preserves the host-refreshed catalog evidence", async () => {
   const calls: string[] = [];
+  const diagnosticsRoot = mkdtempSync(join(tmpdir(), "cgw-catalog-verification-"));
   const catalogFresh = false;
   let selected = false;
   let now = Date.now();
@@ -1414,6 +1451,20 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
     reload: async () => { calls.push("reload"); },
     getByText: () => ({ exactConnectorLabel: true }),
     locator: () => menuRows,
+    evaluate: async () => ({
+      url: "https://chatgpt.com/?temporary-chat=true",
+      title: "ChatGPT",
+      viewport: { width: 800, height: 600 },
+      surfaceId: null,
+      bodyTextChars: 0,
+      composer: { visibleCount: 1, textChars: [0], selectedConnectors: [] },
+      effortControls: [],
+      effortItems: [],
+      menus: [],
+      connectorRows: [],
+      overlays: [],
+      turns: { user: 0, assistant: [] },
+    }),
     keyboard: {
       press: async (key: string) => {
         expect(key).toBe("Enter");
@@ -1431,7 +1482,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
   };
   let prepared = 0;
   const fixture = {
-    config: { appName: "Codex Native2" },
+    config: { appName: "Codex Native2", browserDiagnosticsPath: diagnosticsRoot },
     ensurePage: async () => page,
     prepareTemporaryChatSurface: async () => {
       prepared += 1;
@@ -1457,6 +1508,125 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
     expect(calls).not.toContain("menu:fresh");
   } finally {
     Date.now = realDateNow;
+    rmSync(diagnosticsRoot, { recursive: true, force: true });
+  }
+});
+
+for (const captureScreenshots of [false, true]) test(`connector failure persists safe checkpoints with opt-in screenshots (${captureScreenshots})`, async () => {
+  const diagnosticsRoot = mkdtempSync(join(tmpdir(), "cgw-connector-verification-"));
+  const previousCapture = process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS;
+  if (captureScreenshots) process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS = "1";
+  else delete process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS;
+  let screenshots = 0;
+  const page = {
+    screenshot: async () => { screenshots += 1; return Buffer.from("diagnostic screenshot fixture"); },
+    evaluate: async () => ({
+      url: "https://chatgpt.com/c/private-conversation",
+      title: "private task title",
+      viewport: { width: 800, height: 600 },
+      surfaceId: null,
+      bodyTextChars: 0,
+      composer: { visibleCount: 1, textChars: [6], selectedConnectors: [] },
+      effortControls: [],
+      effortItems: [],
+      menus: [],
+      connectorRows: [],
+      overlays: [],
+      turns: { user: 0, assistant: [] },
+    }),
+  };
+  const failure = new Error("connector proof failed");
+  const verifyConnectorExclusive = (ChatGptBrowserWorker.prototype as unknown as {
+    verifyConnectorExclusive(traceId: string): Promise<string>;
+  }).verifyConnectorExclusive;
+
+  try {
+    await expect(verifyConnectorExclusive.call({
+      config: { appName: "Codex Native2", browserDiagnosticsPath: diagnosticsRoot },
+      ensurePage: async () => page,
+      prepareTemporaryChatSurface: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
+        await capture("composer-ready");
+      },
+      selectConnector: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
+        await capture("connector-mention-triggered");
+        throw failure;
+      },
+    }, "verify_contract_trace")).rejects.toBe(failure);
+
+    const [traceDirectory] = readdirSync(diagnosticsRoot);
+    expect(traceDirectory).toStartWith("verify_contract_trace-");
+    const files = readdirSync(join(diagnosticsRoot, traceDirectory!));
+    expect(screenshots).toBe(captureScreenshots ? 4 : 0);
+    expect(files.filter(name => name.endsWith(".png"))).toHaveLength(screenshots);
+    const checkpoints = files
+      .filter(name => name.endsWith(".json"))
+      .sort()
+      .map(name => JSON.parse(readFileSync(join(diagnosticsRoot, traceDirectory!, name), "utf8")));
+    expect(checkpoints.map(checkpoint => checkpoint.checkpoint)).toEqual([
+      "connector-verification-started",
+      "composer-ready",
+      "connector-mention-triggered",
+      "connector-verification-failed",
+    ]);
+    expect(checkpoints.at(-1)).toMatchObject({
+      traceId: "verify_contract_trace",
+      error: "connector proof failed",
+      state: { composer: { visibleCount: 1, textChars: [6] } },
+    });
+    expect(JSON.stringify(checkpoints)).not.toContain("private");
+  } finally {
+    if (previousCapture === undefined) delete process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS;
+    else process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS = previousCapture;
+    rmSync(diagnosticsRoot, { recursive: true, force: true });
+  }
+});
+
+test("successful connector verification clears the proven selection before releasing the page", async () => {
+  const diagnosticsRoot = mkdtempSync(join(tmpdir(), "cgw-connector-verification-success-"));
+  const calls: string[] = [];
+  const page = {
+    evaluate: async () => ({
+      location: { origin: "https://chatgpt.com", pathSegments: 0, temporaryChat: true },
+      surfaceBound: true,
+      composer: { visibleCount: 1, textChars: [0], selectedConnectorCount: 0 },
+    }),
+  };
+  const verifyConnectorExclusive = (ChatGptBrowserWorker.prototype as unknown as {
+    verifyConnectorExclusive(traceId: string): Promise<string>;
+  }).verifyConnectorExclusive;
+
+  try {
+    const result = await verifyConnectorExclusive.call({
+      config: { appName: "Codex Native2 DEV", browserDiagnosticsPath: diagnosticsRoot },
+      ensurePage: async () => page,
+      prepareTemporaryChatSurface: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
+        calls.push("prepare");
+        await capture("composer-ready");
+      },
+      selectConnector: async (_page: unknown, capture: (checkpoint: string) => Promise<void>) => {
+        calls.push("select");
+        await capture("connector-selected");
+      },
+      clearChatGptComposerState: async () => { calls.push("clear"); },
+    }, "verify_success_contract");
+
+    expect(result).toBe("Codex Native2 DEV");
+    expect(calls).toEqual(["prepare", "select", "clear"]);
+    const [traceDirectory] = readdirSync(diagnosticsRoot);
+    const checkpoints = readdirSync(join(diagnosticsRoot, traceDirectory!))
+      .filter(name => name.endsWith(".json"))
+      .sort()
+      .map(name => JSON.parse(readFileSync(join(diagnosticsRoot, traceDirectory!, name), "utf8")))
+      .map(checkpoint => checkpoint.checkpoint);
+    expect(checkpoints).toEqual([
+      "connector-verification-started",
+      "composer-ready",
+      "connector-selected",
+      "connector-verification-cleared",
+      "connector-verification-succeeded",
+    ]);
+  } finally {
+    rmSync(diagnosticsRoot, { recursive: true, force: true });
   }
 });
 
@@ -1673,6 +1843,10 @@ test("an aborted connector proof clears its mention before the preflight release
       calls.push(controller.signal.aborted ? "cleanup-fill" : "probe-fill");
     },
     focus: async () => { calls.push("focus"); },
+    press: async (key: string, { signal }: { signal?: AbortSignal }) => {
+      expect(signal?.aborted).toBeFalse();
+      calls.push(key === CHATGPT_COMPOSER_SELECT_ALL_KEY ? "cleanup-select-all" : "cleanup-backspace");
+    },
     pressSequentially: async () => { calls.push("type"); },
     evaluate: async () => { calls.push("cleanup-read"); return ""; },
   };
@@ -1707,14 +1881,15 @@ test("an aborted connector proof clears its mention before the preflight release
 
   await expect(selection).rejects.toMatchObject({ name: "AbortError" });
   expect(calls).toEqual([
-    "probe-fill", "focus", "type", "proof-wait", "escape", "cleanup-fill", "cleanup-read",
+    "probe-fill", "focus", "type", "proof-wait", "escape", "focus",
+    "cleanup-select-all", "cleanup-backspace", "cleanup-read",
   ]);
-  expect(fillSignals).toHaveLength(2);
+  expect(fillSignals).toHaveLength(1);
   expect(fillSignals[0]?.aborted).toBeTrue();
-  expect(fillSignals[1]?.aborted).toBeFalse();
   await new Promise(resolve => setTimeout(resolve, 20));
   expect(calls).toEqual([
-    "probe-fill", "focus", "type", "proof-wait", "escape", "cleanup-fill", "cleanup-read",
+    "probe-fill", "focus", "type", "proof-wait", "escape", "focus",
+    "cleanup-select-all", "cleanup-backspace", "cleanup-read",
   ]);
 });
 
@@ -1738,6 +1913,10 @@ test("an aborted real connector selection clears the typed mention before return
       calls.push(controller.signal.aborted ? "cleanup-fill" : "fill");
     },
     focus: async () => { calls.push("focus"); },
+    press: async (key: string) => {
+      calls.push(key === CHATGPT_COMPOSER_SELECT_ALL_KEY ? "cleanup-select-all" : "cleanup-backspace");
+      if (key === "Backspace") composerText = "";
+    },
     pressSequentially: async (value: string) => {
       composerText += value;
       calls.push("type");
@@ -1770,9 +1949,44 @@ test("an aborted real connector selection clears the typed mention before return
   await expect(selection).rejects.toMatchObject({ name: "AbortError" });
   expect(composerText).toBe("");
   expect(calls).toEqual([
-    "fill", "fill", "focus", "type", "selection-wait", "escape", "cleanup-fill", "cleanup-read",
+    "fill", "fill", "focus", "type", "selection-wait", "escape", "focus",
+    "cleanup-select-all", "cleanup-backspace", "cleanup-read",
   ]);
   await new Promise(resolve => setTimeout(resolve, 20));
+  expect(composerText).toBe("");
+});
+
+test("connector cleanup uses native editor deletion when contenteditable fill would retain the mention", async () => {
+  let composerText = "@codex";
+  let selectedAll = false;
+  let fillCalls = 0;
+  const pressed: string[] = [];
+  const composer = {
+    fill: async () => { fillCalls += 1; },
+    focus: async () => {},
+    press: async (key: string) => {
+      pressed.push(key);
+      if (key === CHATGPT_COMPOSER_SELECT_ALL_KEY) selectedAll = true;
+      if (key === "Backspace" && selectedAll) composerText = "";
+    },
+    evaluate: async () => composerText,
+  };
+  const clearChatGptComposerState = (ChatGptBrowserWorker.prototype as unknown as {
+    clearChatGptComposerState(page: unknown): Promise<void>;
+  }).clearChatGptComposerState;
+
+  await clearChatGptComposerState.call({
+    activeComposer: async () => composer,
+    connectorIsSelected: async () => false,
+  }, {
+    locator: (selector: string) => {
+      expect(selector).toBe("body");
+      return { press: async (key: string) => { expect(key).toBe("Escape"); } };
+    },
+  });
+
+  expect(fillCalls).toBe(0);
+  expect(pressed).toEqual([CHATGPT_COMPOSER_SELECT_ALL_KEY, "Backspace"]);
   expect(composerText).toBe("");
 });
 
@@ -1794,9 +2008,15 @@ test("an abort after connector activation removes the selected pill before retur
     focus: async () => {},
     pressSequentially: async (value: string) => { composerText += value; },
     press: async (key: string) => {
-      expect(key).toBe("Enter");
-      connectorSelected = true;
-      composerText = CHATGPT_CONNECTOR_NAME;
+      if (key === "Enter") {
+        connectorSelected = true;
+        composerText = CHATGPT_CONNECTOR_NAME;
+      } else if (key === "Backspace") {
+        connectorSelected = false;
+        composerText = "";
+      } else {
+        expect(key).toBe(CHATGPT_COMPOSER_SELECT_ALL_KEY);
+      }
     },
     evaluate: async () => composerText.trim(),
   };
@@ -2190,6 +2410,26 @@ test("the known ChatGPT rate-limit dialog is acknowledged and returns a structur
     code: "rate_limit_exceeded",
     retryable: true,
     message: "ChatGPT rate limit: too many requests. Try again in a few minutes.",
+  });
+  expect(fixture.pressed).toEqual(["Enter"]);
+});
+
+test("submission acceptance reports a rate-limit dialog that appears after Enter", async () => {
+  const fixture = dialogPage("Too many requests. You're making requests too quickly.");
+  const waitForSubmissionAccepted = (ChatGptBrowserWorker.prototype as unknown as {
+    waitForSubmissionAccepted(page: Page, baseline: unknown): Promise<unknown>;
+  }).waitForSubmissionAccepted;
+
+  await expect(waitForSubmissionAccepted.call(
+    {},
+    fixture.page,
+    {},
+  )).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 429,
+    errorType: "rate_limit_error",
+    code: "rate_limit_exceeded",
+    retryable: true,
   });
   expect(fixture.pressed).toEqual(["Enter"]);
 });
@@ -2686,9 +2926,20 @@ test("browser preflight separates model context from one-message transport limit
 });
 
 test("Bigger Context preflight expands only the total context ceiling and keeps each message boundary", () => {
-  const pro = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
+  const plus = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    proAvailable: false,
+    experimentalBiggerContext: true,
+  };
+  const pro = {
+    localToolsEnabled: false,
+    solAvailable: true,
+    proAvailable: true,
+    experimentalBiggerContext: true,
+  };
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    280_000,
+    333_578,
     95_000,
     "gpt-5.6-sol",
     "high",
@@ -2706,6 +2957,15 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     3,
   )).toThrow("three-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
+    222_385,
+    95_000,
+    "gpt-5.6-sol",
+    "high",
+    pro,
+    900_000,
+    2,
+  )).not.toThrow();
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
     222_386,
     95_000,
     "gpt-5.6-sol",
@@ -2714,6 +2974,33 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     900_000,
     2,
   )).toThrow("two-part ceiling");
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    269_999,
+    80_000,
+    "gpt-5.6-sol",
+    "high",
+    plus,
+    900_000,
+    3,
+  )).not.toThrow();
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    270_000,
+    80_000,
+    "gpt-5.6-sol",
+    "high",
+    plus,
+    900_000,
+    3,
+  )).toThrow("270,000-token three-part ceiling");
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    180_000,
+    80_000,
+    "gpt-5.6-sol",
+    "high",
+    plus,
+    900_000,
+    2,
+  )).toThrow("180,000-token two-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     280_000,
     103_001,
@@ -2737,15 +3024,21 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
 test("Bigger Context stages use the lowest account mode that can carry the stage", () => {
   const plus = { localToolsEnabled: false, solAvailable: true, proAvailable: false };
   const pro = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, "medium", 30_000, 200_000).effort).toBe("medium");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, "high", 30_000, 300_000).effort).toBe("medium");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, "medium", 100_000, 500_000).effort).toBe("low");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, "medium", 100_000, 600_000).effort).toBe("medium");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, "max", 104_000, 1_200_000).effort).toBe("max");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 200_000).effort).toBe("low");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 300_000).effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 80_000, 300_000).effort).toBe("medium");
+  expect(() => resolveChatGptWebMultipartStagingMode(
+    "gpt-5.6-sol",
+    plus,
+    80_001,
+    300_000,
+  )).toThrow("No ChatGPT effort");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 500_000).effort).toBe("low");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 600_000).effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 104_000, 1_200_000).effort).toBe("max");
   expect(() => resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-luna",
     { localToolsEnabled: false, solAvailable: false, proAvailable: false },
-    "low",
     10_000,
     20_000,
   )).toThrow("Luna-only");
@@ -2776,18 +3069,33 @@ test("browser diagnostics redact context envelopes and capability values", () =>
   expect(diagnostic).toContain("<codex_context_json>[redacted]</codex_context_json>");
 });
 
+test("browser diagnostic state drops every rendered text field before persistence", () => {
+  const diagnostic = sanitizeChatGptBrowserDiagnosticState({
+    url: "https://chatgpt.com/c/private-conversation-id",
+    title: "private conversation title",
+    location: { origin: "https://chatgpt.com", pathSegments: 2, temporaryChat: false },
+    connectorRows: [{
+      tag: "a",
+      role: "button",
+      testId: "private-account-row",
+      text: "private sidebar conversation",
+      textChars: 28,
+    }],
+    overlays: [{ role: "status", text: "private suggestion", textChars: 18 }],
+  });
+  const encoded = JSON.stringify(diagnostic);
+  expect(encoded).not.toContain("private");
+  expect(diagnostic).toEqual({
+    location: { origin: "https://chatgpt.com", pathSegments: 2, temporaryChat: false },
+    connectorRows: [{ tag: "a", role: "button", textChars: 28 }],
+    overlays: [{ role: "status", textChars: 18 }],
+  });
+});
+
 test("browser stage diagnostics use safe bounded artifact names", () => {
   expect(browserDiagnosticCheckpoint("effort menu / before click")).toBe("effort-menu-before-click");
   expect(browserDiagnosticCheckpoint("../turn_token secret")).toBe("turn_token-secret");
   expect(browserDiagnosticCheckpoint("x".repeat(200))).toHaveLength(80);
-});
-
-test("routine browser diagnostics avoid screenshots unless full capture is requested", () => {
-  expect(browserDiagnosticIncludesScreenshot("send-ready", false)).toBeFalse();
-  expect(browserDiagnosticIncludesScreenshot("response-visible", false)).toBeFalse();
-  expect(browserDiagnosticIncludesScreenshot("response-stalled-30s", false)).toBeTrue();
-  expect(browserDiagnosticIncludesScreenshot("turn-failed", false)).toBeTrue();
-  expect(browserDiagnosticIncludesScreenshot("send-ready", true)).toBeTrue();
 });
 
 test("visible DOM trace interleaves statuses and explicit intermediate commentary", () => {
@@ -3585,6 +3893,8 @@ test("a staged Bigger Context part gets an acknowledgement window sized to its p
   // No MCP activity exists while an inert part is being ingested, so the response and send budgets
   // bound the same exchange.
   expect(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS).toBe(browserStageTimeouts.multipartStageSend);
+  expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS);
+
 });
 
 test("the suspension clock charges only tick gaps that mean the process was frozen", () => {

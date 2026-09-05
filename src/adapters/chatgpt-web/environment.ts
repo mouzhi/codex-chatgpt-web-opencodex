@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 import { resolveNativeCodexTurnEnvironment, type NativeCodexTurnEnvironment } from "./native-session-environment";
+import { isAcceptedCompactionContinuation } from "./compaction-continuation";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -31,6 +32,12 @@ export interface ChatGptThreadSpawnLineage {
   parentThreadId: string;
   agentName: string;
   sandboxType: ChatGptSandboxPolicy["type"];
+  workspaceRoots: string[];
+}
+
+export interface ChatGptRootThreadMetadata {
+  threadId: string;
+  sandboxType: ChatGptSandboxPolicy["type"] | "platform";
   workspaceRoots: string[];
 }
 
@@ -65,8 +72,8 @@ function pathIdentity(value: string): string {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function clientTurnMetadata(parsed: CodexParsedRequest): Record<string, unknown> | undefined {
-  const body = record(parsed._rawBody);
+function clientTurnMetadataFromBody(value: unknown): Record<string, unknown> | undefined {
+  const body = record(value);
   const metadata = record(body?.client_metadata);
   const raw = metadata?.["x-codex-turn-metadata"];
   if (typeof raw === "string") {
@@ -74,6 +81,10 @@ function clientTurnMetadata(parsed: CodexParsedRequest): Record<string, unknown>
     catch { return undefined; }
   }
   return record(raw);
+}
+
+function clientTurnMetadata(parsed: CodexParsedRequest): Record<string, unknown> | undefined {
+  return clientTurnMetadataFromBody(parsed._rawBody);
 }
 
 function itemTurnId(value: unknown): string | undefined {
@@ -88,6 +99,37 @@ function rawMessageText(value: Record<string, unknown>): string {
     .map(part => record(part)?.text)
     .filter((text): text is string => typeof text === "string")
     .join("\n");
+}
+
+/** True when the raw Responses input attempted to carry an environment envelope, valid or not. */
+export function hasRawChatGptEnvironmentContext(parsed: CodexParsedRequest): boolean {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  return input.some(value => {
+    const item = record(value);
+    return item?.type === "message" && /<\/?environment_context\b/i.test(rawMessageText(item));
+  });
+}
+
+/** Historical XML is not a current environment update, including in old untagged rollouts. */
+export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest): boolean {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) return hasRawChatGptEnvironmentContext(parsed);
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  let laterAssistantOutput = false;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (!item) continue;
+    if ((item.type === "message" && item.role === "assistant")
+      || item.type === "function_call" || item.type === "reasoning" || item.type === "compaction") {
+      laterAssistantOutput = true;
+    }
+    if (item.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) continue;
+    const owner = itemTurnId(item);
+    if (owner === turnId || (owner === undefined && !laterAssistantOutput)) return true;
+  }
+  return false;
 }
 
 function contextualUserMessage(value: Record<string, unknown>): boolean {
@@ -130,12 +172,18 @@ export function priorChatGptAbortedTurnIds(parsed: CodexParsedRequest): string[]
  * under the same logical task revision.
  */
 export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unknown {
-  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  const identity = extractChatGptTurnIdentity(parsed);
+  const turnId = identity.turnId;
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
   const revision = latestChatGptTurnUserRevision(parsed, turnId)
     ?? transientNativeTurnUserRevision(parsed, turnId);
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
-  if (revision.turnId !== undefined && revision.turnId !== turnId) {
+  // A pre-turn compact may summarize an earlier user message before native Codex continues
+  // under its new turn id without adding a new human message. Accept only our exact completed
+  // checkpoint; an arbitrary older prompt is still not a new instruction or a valid handoff.
+  if (revision.turnId !== undefined && revision.turnId !== turnId
+    && (priorChatGptAbortedTurnIds(parsed).includes(revision.turnId)
+      || !isAcceptedCompactionContinuation(parsed, identity, revision))) {
     throw new Error(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);
   }
   return revision.content;
@@ -169,6 +217,31 @@ export function extractChatGptCompactionSourceRevision(parsed: CodexParsedReques
   const revision = latestChatGptTurnUserRevision(parsed, extractChatGptTurnIdentity(parsed).turnId);
   if (!revision) throw new Error("ChatGPT web compaction requires a source user message");
   return revision;
+}
+
+/** A completed checkpoint binds an older instruction to this exact continuing native turn. */
+export function isChatGptCompactionContinuation(parsed: CodexParsedRequest): boolean {
+  const identity = extractChatGptTurnIdentity(parsed);
+  const revision = latestChatGptTurnUserRevision(parsed, identity.turnId);
+  return revision?.turnId !== undefined && identity.turnId !== undefined
+    && revision.turnId !== identity.turnId
+    && !priorChatGptAbortedTurnIds(parsed).includes(revision.turnId)
+    && isAcceptedCompactionContinuation(parsed, identity, revision);
+}
+
+/** Parse a claim only: the caller must compare it with this turn's native rollout authority. */
+export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  const body = record(parsed._rawBody);
+  const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
+    const item = record(value);
+    if (item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId
+      || typeof item.id !== "string" || !item.id) return [];
+    const text = rawMessageText(item).trim();
+    return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
+  });
+  if (updates.length !== 1) throw new Error("Compaction continuation requires one current native environment claim");
+  return parseChatGptEnvironmentText(parsed, updates[0]!);
 }
 
 function environmentBeforeUser(input: unknown[], userIndex: number, expectedTurnId?: string): string | undefined {
@@ -382,7 +455,8 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
   const input = Array.isArray(body?.input) ? body.input : [];
   let activeUserIndex = -1;
   for (let index = input.length - 1; index >= 0; index -= 1) {
-    if (record(input[index])?.role === "user") {
+    const item = record(input[index]);
+    if (item?.role === "user" && !contextualUserMessage(item)) {
       activeUserIndex = index;
       break;
     }
@@ -402,10 +476,19 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
   // the earlier current-turn environment/prompt pair only through canonical metadata, and bind all
   // declared roots to metadata workspaces so user-authored XML cannot widen filesystem authority.
   const metadata = clientTurnMetadata(parsed);
+  let crossedAssistantOutput = false;
   for (let index = activeUserIndex - 1; index > 0; index -= 1) {
+    crossedAssistantOutput ||= hasAssistantOutputBetween(input, index, index + 1);
+    // Replayed untagged history is not a same-turn skill invocation. Only explicit current-turn
+    // provenance may cross an assistant response; otherwise resolve from the native rollout.
+    if (crossedAssistantOutput && itemTurnId(input[index]) !== turnId) continue;
     const sameTurn = canonicalMetadataEnvironmentBeforeUser(input, index, metadata, true);
     if (sameTurn) return sameTurn;
   }
+
+  // An attempted current update takes precedence over all older authority, even when its native
+  // item metadata is incomplete. Never mask malformed permissions/cwd with a previous turn.
+  if (hasCurrentChatGptEnvironmentContext(parsed)) return undefined;
 
   const replayPrefixLen = Math.min(parsed._replayPrefixLen ?? 0, input.length);
   for (let index = replayPrefixLen - 1; index > 0; index -= 1) {
@@ -461,6 +544,10 @@ function clientMetadataWorkspaceRoots(parsed: CodexParsedRequest): string[] {
 function trustedEnvironmentText(parsed: CodexParsedRequest): string {
   const raw = rawEnvironmentText(parsed);
   if (raw) return raw;
+  // A real Responses request always has `_rawBody`. Parsed system/developer text has already lost
+  // the wire provenance needed to distinguish Codex context from user-authored XML, so it must
+  // never become filesystem authority for a raw request.
+  if (parsed._rawBody !== undefined) return "";
   const system = parsed.context.systemPrompt ?? [];
   const developer = parsed.context.messages
     .filter(message => message.role === "developer")
@@ -672,7 +759,10 @@ function transientNativeTurnUserRevision(
 }
 
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
-  const text = trustedEnvironmentText(parsed);
+  return parseChatGptEnvironmentText(parsed, trustedEnvironmentText(parsed));
+}
+
+function parseChatGptEnvironmentText(parsed: CodexParsedRequest, text: string): ChatGptTurnEnvironment {
   const cwdMatches = environmentCwdMatches(text, clientMetadataWorkspaceRoots(parsed));
   if (cwdMatches.length === 0 && !/<\/?(?:environment_context|environments|environment|cwd|filesystem|workspace_roots|permission_profile|sandbox_mode)\b/i.test(text)) {
     const nativeEnvironment = nativeSessionEnvironment(parsed);
@@ -713,14 +803,21 @@ export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatG
 
 export function extractChatGptTurnIdentity(parsed: CodexParsedRequest): ChatGptTurnIdentity {
   const body = record(parsed._rawBody);
-  const metadata = clientTurnMetadata(parsed);
+  return {
+    ...extractCodexTurnIdentityFromBody(body),
+    ...(typeof body?.prompt_cache_key === "string" ? { promptCacheKey: body.prompt_cache_key } : {}),
+  };
+}
+
+/** Read only Codex-owned lifecycle identity without interpreting or rewriting the provider body. */
+export function extractCodexTurnIdentityFromBody(value: unknown): ChatGptTurnIdentity {
+  const metadata = clientTurnMetadataFromBody(value);
   return {
     ...(typeof metadata?.thread_id === "string" ? { threadId: metadata.thread_id } : {}),
     ...(typeof metadata?.turn_id === "string" ? { turnId: metadata.turn_id } : {}),
     ...(typeof metadata?.parent_thread_id === "string" ? { parentThreadId: metadata.parent_thread_id } : {}),
     ...(typeof metadata?.agent_name === "string" ? { agentName: metadata.agent_name } : {}),
     ...(typeof metadata?.subagent_kind === "string" ? { subagentKind: metadata.subagent_kind } : {}),
-    ...(typeof body?.prompt_cache_key === "string" ? { promptCacheKey: body.prompt_cache_key } : {}),
   };
 }
 
@@ -734,7 +831,7 @@ export function extractChatGptThreadSpawnLineage(
   parsed: CodexParsedRequest,
 ): ChatGptThreadSpawnLineage | undefined {
   const metadata = clientTurnMetadata(parsed);
-  if (!metadata || metadata.request_kind !== "turn" || metadata.subagent_kind !== "thread_spawn") return undefined;
+  if (!metadata || !isEnvironmentRequest(metadata, parsed) || metadata.subagent_kind !== "thread_spawn") return undefined;
   const threadId = typeof metadata.thread_id === "string" ? metadata.thread_id.trim() : "";
   const parentThreadId = typeof metadata.parent_thread_id === "string" ? metadata.parent_thread_id.trim() : "";
   const agentName = typeof metadata.agent_name === "string" ? metadata.agent_name.trim() : "";
@@ -747,4 +844,23 @@ export function extractChatGptThreadSpawnLineage(
   if (workspacePaths.some(path => !isAbsolute(path))) return undefined;
   const workspaceRoots = [...new Set(workspacePaths.map(path => resolve(path)))];
   return { threadId, parentThreadId, agentName, sandboxType, workspaceRoots };
+}
+
+/** Root tasks have no spawn edge; their canonical session and current turn must prove authority. */
+export function extractChatGptRootThreadMetadata(parsed: CodexParsedRequest): ChatGptRootThreadMetadata | undefined {
+  const metadata = clientTurnMetadata(parsed);
+  if (!metadata || !isEnvironmentRequest(metadata, parsed)
+    || metadata.parent_thread_id != null || metadata.subagent_kind != null
+    || (metadata.agent_name != null && metadata.agent_name !== "/root")) return undefined;
+  const threadId = typeof metadata.thread_id === "string" ? metadata.thread_id.trim() : "";
+  const sandboxType = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
+  const workspaces = record(metadata.workspaces);
+  const workspacePaths = workspaces ? Object.keys(workspaces) : [];
+  if (!threadId || !sandboxType || workspacePaths.some(path => !isAbsolute(path))) return undefined;
+  return { threadId, sandboxType, workspaceRoots: [...new Set(workspacePaths.map(path => resolve(path)))] };
+}
+
+function isEnvironmentRequest(metadata: Record<string, unknown>, parsed: CodexParsedRequest): boolean {
+  return metadata.request_kind === "turn"
+    || (parsed._compactionRequest === true && metadata.request_kind === "compaction");
 }

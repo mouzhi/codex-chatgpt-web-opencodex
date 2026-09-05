@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   defaultConfig,
@@ -94,6 +94,7 @@ test("OpenCodex provider purpose persists the secure full config at its fixed lo
     browserHost: "launcher",
     localToolsEnabled: true,
     preserveTerminalPage: true,
+    nativeCodexHome: join(homedir(), ".codex"),
     finalOutputDirectory: join(root, "logs", "final-outputs"),
   });
 });
