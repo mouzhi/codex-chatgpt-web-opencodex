@@ -1051,7 +1051,7 @@ function ManualTurnGuide({
 }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    if (!["awaiting-user", "sent"].includes(tab.manualState ?? "") || !tab.manualDeadlineAt) return;
+    if (tab.manualState !== "awaiting-user" || !tab.manualDeadlineAt) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
@@ -1059,13 +1059,15 @@ function ManualTurnGuide({
   const deadline = tab.manualDeadlineAt ? Date.parse(tab.manualDeadlineAt) : Number.NaN;
   const seconds = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - now) / 1_000)) : 0;
   const waiting = tab.manualState === "awaiting-user";
-  const status = waiting || tab.manualState === "sent"
+  const status = waiting
     ? `${seconds} ${copy.manualPromptSeconds}`
-    : tab.manualState === "running"
-      ? copy.manualPromptRunning
-      : tab.manualState === "completed"
-        ? copy.complete
-        : copy.failed;
+    : tab.manualState === "sent"
+      ? copy.manualPromptSent
+      : tab.manualState === "running"
+        ? copy.manualPromptRunning
+        : tab.manualState === "completed"
+          ? copy.complete
+          : copy.failed;
   return (
     <div className={`manual-turn-guide${waiting ? " is-waiting" : ""}`}>
       <div>
@@ -1255,6 +1257,7 @@ function McpSurface({
   const [localBusy, setLocalBusy] = useState(false);
   const busy = localBusy || operation?.status === "running";
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
+  const verified = !configuringInactiveMode && snapshot.state.mcpSetupComplete === true;
   const manualInteraction = interactionMode === "manual";
   const steps = useMemo(() => [
     { title: copy.mcpStepOne, body: copy.mcpStepOneBody },
@@ -1338,13 +1341,13 @@ function McpSurface({
       <div className="wizard-stepper" aria-label={`${step + 1} / 3`}>
         {steps.map((item, index) => (
           <button
-            className={`${index === step ? "is-active" : ""}${index < step ? " is-complete" : ""}`}
+            className={`${index === step ? "is-active" : ""}${index < step || (index === 2 && verified) ? " is-complete" : ""}`}
             disabled={busy || index > step}
             key={item.title}
             onClick={() => void safeMove(index)}
             type="button"
           >
-            <span>{index < step ? <Icon name="check" /> : index + 1}</span>
+            <span>{index < step || (index === 2 && verified) ? <Icon name="check" /> : index + 1}</span>
             <em>{item.title}</em>
           </button>
         ))}
@@ -1502,16 +1505,23 @@ function McpSurface({
           </PrimaryButton>
         ) : null}
         {step === 2 ? (
-          <PrimaryButton
-            disabled={busy}
-            onClick={() => void (doctor?.ok ? onDone() : verify())}
-          >
-            {busy
-              ? operation?.name === "mcp-verification" && operation.status === "running"
-                ? operation.message
-                : copy.running
-              : doctor?.ok ? copy.done : copy.verifyRuntime}
-          </PrimaryButton>
+          <>
+            {verified ? (
+              <SecondaryButton disabled={busy} onClick={() => void verify()}>
+                {copy.verifyRuntime}
+              </SecondaryButton>
+            ) : null}
+            <PrimaryButton
+              disabled={busy}
+              onClick={() => void (verified ? onDone() : verify())}
+            >
+              {busy
+                ? operation?.name === "mcp-verification" && operation.status === "running"
+                  ? operation.message
+                  : copy.running
+                : verified ? copy.done : copy.verifyRuntime}
+            </PrimaryButton>
+          </>
         ) : null}
       </div>
     </ContentSurface>

@@ -1191,7 +1191,9 @@ class RuntimeHost {
       existing.mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
-      ...this.browserInteractionArgs({ mode: this.providerOnly ? "automatic" : interactionMode }),
+      // A release may repair capability detection. Reusing the previous result can
+      // keep eligible models disabled even after the corrected probe is installed.
+      ...this.browserInteractionArgs({ mode: this.providerOnly ? "automatic" : interactionMode, refreshCapabilities: true }),
       ...providerSetupFlags(this.providerOnly),
       "--acknowledge-unofficial",
       "--restart-service",
