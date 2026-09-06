@@ -7,6 +7,21 @@ import {
 } from "../src/chatgpt-web-models";
 import { modelsRequest } from "../src/server";
 
+test("OpenCodex Zero Risk catalog uses manual-only routes and bounded upstream context", async () => {
+  const config = defaultConfig("full");
+  config.purpose = OPENCODEX_PROVIDER_CONFIG_PURPOSE;
+  config.browserInteractionMode = "manual";
+  const response = await modelsRequest(new Request("http://127.0.0.1:17841/v1/models"), config,
+    async () => { throw new Error("No native catalog access"); });
+  const body = await response.json() as { models: Array<Record<string, unknown>> };
+  expect(body.models.map(m => m.slug)).toEqual(["chatgpt-web/zero-risk"]);
+  const limits = resolveChatGptWebContextLimits(CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE.backendModel, "low", config);
+  expect(body.models[0]!.context_window).toBe(limits.contextWindow);
+  expect(body.models[0]!.auto_compact_token_limit).toBe(limits.autoCompactTokenLimit);
+  expect(body.models[0]!.input_modalities).toEqual(["text"]);
+  expect(body.models[0]!.multi_agent_version).toBe("v1");
+});
+
 test("proxies official /models auth and query, then appends the fixed ChatGPT Web models", async () => {
   const request = new Request("http://127.0.0.1:17841/v1/models?client_version=1.2.3", {
     headers: { authorization: "Bearer codex-oauth-token", "if-none-match": "native-etag" },

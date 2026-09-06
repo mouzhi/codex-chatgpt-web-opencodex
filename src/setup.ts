@@ -249,12 +249,6 @@ async function waitForProxy(config: AppConfig, timeoutMs = 10_000): Promise<void
 function baseConfig(existing: AppConfig | undefined, options: SetupOptions): AppConfig {
   const config = existing ? structuredClone(existing) : defaultConfig(options.mode);
   config.mode = options.mode;
-  if (options.providerOnly) {
-    if (options.browserInteractionMode === "manual") {
-      throw new Error("Provider-only setup requires automatic browser interaction");
-    }
-    config.browserInteractionMode = "automatic";
-  }
   if (options.browserInteractionMode) config.browserInteractionMode = options.browserInteractionMode;
   Object.assign(config, resolveInteractionConnectorIdentities(
     existing,
@@ -379,7 +373,7 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
   }
   const installedBinary = await installTunnelClient();
   const productionProfileName = config.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
-    ? PROVIDER_TUNNEL_NAME
+? interactionMode === "manual" ? `${PROVIDER_TUNNEL_NAME}-zero-risk` : PROVIDER_TUNNEL_NAME
     : interactionMode === "manual"
     ? "codex-chatgpt-web-zero-risk"
     : "codex-chatgpt-web";

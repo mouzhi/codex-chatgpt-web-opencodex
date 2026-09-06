@@ -500,9 +500,6 @@ function registerIpc({ logger, stateStore }) {
     const current = stateStore.read();
     if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
     const browserInteractionMode = validateBrowserInteractionMode(rawInteractionMode);
-    if (IS_PROVIDER_ONLY_PROFILE && browserInteractionMode !== "automatic") {
-      throw new Error("OpenCodex provider launcher keeps browser interaction automatic");
-    }
     if (current.autoStart) setAutostart(app, true, LAUNCHER_PROFILE);
     const next = stateStore.update({
       language: validateLanguage(language),
@@ -755,9 +752,6 @@ function registerIpc({ logger, stateStore }) {
     const interactionMode = input?.interactionMode === undefined
       ? currentMode
       : validateBrowserInteractionMode(input.interactionMode);
-    if (IS_PROVIDER_ONLY_PROFILE && interactionMode !== "automatic") {
-      throw new Error("OpenCodex provider MCP setup requires automatic browser interaction");
-    }
     const interactionModeChange = interactionMode !== currentMode;
     const setup = IS_DEV_PROFILE
       ? runtimeHost.setupDevMcp.bind(runtimeHost)
@@ -814,9 +808,6 @@ function registerIpc({ logger, stateStore }) {
     return state;
   });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
-    if (IS_PROVIDER_ONLY_PROFILE) {
-      throw new Error("Zero Risk manual interaction is unavailable in the OpenCodex provider launcher");
-    }
     const browserOperation = browserHost.currentOperation();
     if (browserHost.activeTraceId || browserOperation) {
       throw new Error(
@@ -837,9 +828,6 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:browser-interaction-mode", async (_event, rawMode) => {
     const mode = validateBrowserInteractionMode(rawMode);
-    if (IS_PROVIDER_ONLY_PROFILE && mode !== "automatic") {
-      throw new Error("OpenCodex provider launcher keeps browser interaction automatic");
-    }
     const current = stateStore.read();
     if (current.browserInteractionMode === mode) {
       return { state: current, credentialsRequired: false, targetMode: mode };
@@ -984,10 +972,6 @@ async function start() {
   await app.whenReady();
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
-  if (IS_PROVIDER_ONLY_PROFILE
-    && (stateStore.read().browserInteractionMode !== "automatic" || stateStore.read().zeroRiskProEnabled === true)) {
-    stateStore.update({ browserInteractionMode: "automatic", zeroRiskProEnabled: false });
-  }
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
       language: stateStore.read().language || "en",

@@ -99,6 +99,26 @@ test("OpenCodex provider purpose persists the secure full config at its fixed lo
   });
 });
 
+test("OpenCodex provider permits Full Zero Risk with isolated tunnel binding", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-provider-manual-"));
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  const config = directFullConfig(root);
+  config.purpose = OPENCODEX_PROVIDER_CONFIG_PURPOSE;
+  config.browserHost = "launcher";
+  config.browserHostDescriptorPath = join(root, "runtime", "launcher-browser.json");
+  config.browserInteractionMode = "manual";
+  config.automaticAppName = config.appName;
+  config.manualAppName = "Codex Zero Risk";
+  config.appName = config.manualAppName;
+  config.manualTunnel = config.tunnel;
+  saveConfig(config);
+  expect(loadConfig().browserInteractionMode).toBe("manual");
+  config.automaticTunnel = config.manualTunnel;
+  saveConfig(config);
+  expect(() => loadConfig()).toThrow();
+});
+
 test("OpenCodex provider purpose rejects a non-default port", () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-config-opencodex-port-"));
   roots.push(root);

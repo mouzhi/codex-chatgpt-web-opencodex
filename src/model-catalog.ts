@@ -244,11 +244,14 @@ export function buildProviderOnlyModelCatalog(config: AppConfig): JsonObject {
   const providerContextWindow = 900_000;
   const providerAutoCompactTokenLimit = 900_000;
   const models = availableChatGptWebModelRoutes(config).map((route, index) => {
+    const manualLimits = route.interactionMode === "manual"
+      ? resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config)
+      : undefined;
     const model: JsonObject = {
       slug: route.slug,
       display_name: route.displayName,
       description: route.description,
-      input_modalities: ["text", "image"],
+      input_modalities: route.interactionMode === "manual" ? ["text"] : ["text", "image"],
       visibility: "list",
       supported_in_api: true,
       // Provider-only is intentionally pinned to V1: browser-model V2 payloads are encrypted for
@@ -262,10 +265,10 @@ export function buildProviderOnlyModelCatalog(config: AppConfig): JsonObject {
       // mode.  Do not expose the synthetic template's complete ladder to the caller.
       default_reasoning_level: route.codexEffort,
       supported_reasoning_levels: [{ effort: route.codexEffort, description: route.displayName }],
-      context_window: providerContextWindow,
-      max_context_window: providerContextWindow,
-      effective_context_window_percent: 100,
-      auto_compact_token_limit: providerAutoCompactTokenLimit,
+      context_window: manualLimits?.contextWindow ?? providerContextWindow,
+      max_context_window: manualLimits?.contextWindow ?? providerContextWindow,
+      effective_context_window_percent: manualLimits?.effectiveContextWindowPercent ?? 100,
+      auto_compact_token_limit: manualLimits?.autoCompactTokenLimit ?? providerAutoCompactTokenLimit,
       additional_speed_tiers: [],
       service_tiers: [],
       default_service_tier: null,

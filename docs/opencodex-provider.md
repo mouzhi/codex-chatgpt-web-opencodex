@@ -132,3 +132,24 @@ longer timeout.
 
 Removing the OpenCodex provider does not delete the Electron login profile or tunnel key. Browser
 state and credentials are removed only through a separate, explicit cleanup operation.
+# Optional Zero Risk mode (5.0.4 special build)
+
+Automatic remains the default. The launcher can now opt into upstream Zero Risk
+through its interaction-mode control. It requires Full mode, a separate Tunnel ID
+and runtime key, and a separate ChatGPT connector. Missing credentials prompt for
+setup; Automatic credentials must never silently become the manual binding.
+
+In Zero Risk the user chooses the model/connector and pastes/sends the prepared
+prompt manually. The upstream manual transport does not read or change ChatGPT's
+DOM. The name is not a guarantee that an account cannot be restricted.
+
+The provider remains isolated on 127.0.0.1:17841 with Compatibility V1 and never
+writes the native Codex route. Manual tunnel profiles use the distinct
+`codex-chatgpt-web-opencodex-zero-risk` name. Restart and managed upgrades preserve
+the selected mode. The Zero Risk Pro toggle also uses provider-only setup flags.
+
+Automatic model contexts retain 900K. Manual catalog entries use upstream's manual
+context limits and text-only input, not the automatic multipart capacity. After
+switching modes, refresh the provider model list in OpenCodex and choose its
+`chatgpt-web/zero-risk` (or explicitly enabled `zero-risk-pro`) route. Do not use an
+old automatic model selector while manual mode is active.

@@ -283,9 +283,6 @@ async function setupCommand(args: string[]): Promise<void> {
   if (automaticBrowserInteraction || manualBrowserInteraction) {
     options.browserInteractionMode = manualBrowserInteraction ? "manual" : "automatic";
   }
-  if (providerOnly && options.browserInteractionMode === "manual") {
-    throw new Error("--provider-only requires automatic browser interaction; Zero Risk manual turns cannot serve OpenCodex requests");
-  }
   const subagentProtocol = takeOption(args, "--subagent-protocol");
   if (subagentProtocol !== undefined) {
     if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {

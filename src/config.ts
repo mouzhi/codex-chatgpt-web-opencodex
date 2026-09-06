@@ -434,10 +434,6 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`OpenCodex provider configuration requires launcher browser host in ${path}`);
   }
   if (parsed.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
-    && browserInteractionMode !== "automatic") {
-    throw new Error(`OpenCodex provider configuration requires automatic browser interaction in ${path}`);
-  }
-  if (parsed.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE
     && parsed.subagentProtocol !== "compatibility-v1") {
     throw new Error(`OpenCodex provider configuration requires compatibility-v1 subagents in ${path}`);
   }

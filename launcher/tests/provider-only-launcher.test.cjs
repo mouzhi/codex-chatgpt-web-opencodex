@@ -84,6 +84,23 @@ function providerHost(existingConfig = null, options = {}) {
   return { host, invocation: () => invocation, root };
 }
 
+test("optional provider Zero Risk uses manual setup without native route ownership", async () => {
+  const fixture = providerHost(providerConfig({ mode: "full", browserInteractionMode: "manual" }),
+    { getBrowserInteractionMode: () => "manual" });
+  try {
+    assert.equal(fixture.host.browserInteractionMode(), "manual");
+    assert.deepEqual(fixture.host.browserInteractionArgs({refreshCapabilities: true}), ["--zero-risk-browser-interaction"]);
+    assert.equal(fixture.host.mcpCredentialsConfigured("manual"), false);
+    await fixture.host.setZeroRiskPro(true);
+    const args = fixture.invocation().args;
+    assert.ok(args.includes("--provider-only"));
+    assert.ok(args.includes("--zero-risk-pro"));
+    assert.ok(!args.includes("--replace-codex-route"));
+    assert.ok(!args.includes("--refresh-account-capabilities"));
+    assert.throws(() => fixture.host.setupMcp({interactionMode: "manual"}), /Tunnel ID/);
+  } finally { fs.rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
 test("provider-only runtime validation accepts only its explicit purpose and fixed endpoint", () => {
   const config = providerConfig();
   const descriptorPath = config.browserHostDescriptorPath;

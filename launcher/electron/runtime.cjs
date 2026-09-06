@@ -231,9 +231,6 @@ class RuntimeHost {
     if (mode !== "automatic" && mode !== "manual") {
       throw new Error("Launcher browser interaction mode is invalid");
     }
-    if (this.providerOnly && mode !== "automatic") {
-      throw new Error("OpenCodex provider runtime requires automatic browser interaction");
-    }
     return mode;
   }
 
@@ -1003,9 +1000,6 @@ class RuntimeHost {
     const interactionMode = existing.configured
       ? existing.config?.browserInteractionMode ?? this.browserInteractionMode()
       : this.browserInteractionMode();
-    if (this.providerOnly && interactionMode !== "automatic") {
-      throw new Error("OpenCodex provider runtime requires automatic browser interaction");
-    }
     if (!existing.configured && interactionMode === "manual") {
       throw new Error("Zero Risk must be installed through MCP setup because tunnel credentials are required");
     }
@@ -1115,9 +1109,6 @@ class RuntimeHost {
   }
 
   async setZeroRiskPro(enabled) {
-    if (this.providerOnly) {
-      throw new Error("Zero Risk manual interaction is unavailable in the OpenCodex provider launcher");
-    }
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {
       throw new Error("Install the Codex integration before changing Zero Risk model profiles");
@@ -1137,7 +1128,7 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--standard-context",
       profileFlag,
-      ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
+      ...(this.launcherProfile === "production" ? [...providerSetupFlags(this.providerOnly), ...(this.providerOnly ? [] : ["--replace-codex-route"]), "--restart-service"] : []),
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
     const options = {
@@ -1162,7 +1153,7 @@ class RuntimeHost {
       && isLegacyConnectorName(validateConnectorName(existing.config?.appName));
     const interactionMode = existing.config?.browserInteractionMode ?? "automatic";
     const expectedTunnelProfile = this.providerOnly
-      ? "codex-chatgpt-web-opencodex"
+      ? interactionMode === "manual" ? "codex-chatgpt-web-opencodex-zero-risk" : "codex-chatgpt-web-opencodex"
       : interactionMode === "manual"
       ? "codex-chatgpt-web-zero-risk"
       : "codex-chatgpt-web";
@@ -1193,7 +1184,7 @@ class RuntimeHost {
       this.browserDescriptorPath,
       // A release may repair capability detection. Reusing the previous result can
       // keep eligible models disabled even after the corrected probe is installed.
-      ...this.browserInteractionArgs({ mode: this.providerOnly ? "automatic" : interactionMode, refreshCapabilities: true }),
+      ...this.browserInteractionArgs({ mode: interactionMode, refreshCapabilities: true }),
       ...providerSetupFlags(this.providerOnly),
       "--acknowledge-unofficial",
       "--restart-service",
@@ -1226,9 +1217,6 @@ class RuntimeHost {
     this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const targetMode = interactionMode ?? this.browserInteractionMode();
-    if (this.providerOnly && targetMode !== "automatic") {
-      throw new Error("OpenCodex provider MCP setup requires automatic browser interaction");
-    }
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured(targetMode);
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
@@ -1328,9 +1316,6 @@ class RuntimeHost {
   async setBrowserInteractionMode(mode, afterRuntimeReady) {
     if (mode !== "automatic" && mode !== "manual") {
       throw new Error("Browser interaction mode must be automatic or manual");
-    }
-    if (this.providerOnly && mode !== "automatic") {
-      throw new Error("OpenCodex provider launcher keeps browser interaction automatic");
     }
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {

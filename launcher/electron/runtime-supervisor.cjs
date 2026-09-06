@@ -221,9 +221,6 @@ function validateConfig(
   if (config.browserInteractionMode !== "automatic" && config.browserInteractionMode !== "manual") {
     throw new Error("Runtime configuration has an invalid browser interaction mode");
   }
-  if (providerOnly && config.browserInteractionMode !== "automatic") {
-    throw new Error("OpenCodex provider runtime requires automatic browser interaction");
-  }
   if (config.subagentProtocol !== undefined
     && config.subagentProtocol !== "compatibility-v1"
     && config.subagentProtocol !== "native") {
