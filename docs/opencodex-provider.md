@@ -26,10 +26,10 @@ Provider configuration is persisted with `purpose: "opencodex-provider"`. The da
 purpose in `/healthz`; management scripts must reject a listener that does not report it. Provider
 mode never installs, connects, restores, or monitors the native Codex `openai_base_url` route.
 
-This profile is deliberately **Automatic-only**. V5's Zero Risk manual paste/send mode cannot
-serve an OpenCodex request, so the provider launcher rejects it instead of silently changing the
-turn contract. The provider catalog is also pinned to Compatibility V1 and advertises a 900K
-aggregate context/compaction window for every available `chatgpt-web/*` row. Browser-stage payload
+This profile defaults to **Automatic**, with optional Zero Risk support described below.
+Mode changes are explicit and require their own connector binding. The provider catalog is
+pinned to Compatibility V1 and advertises a 900K aggregate context/compaction window for
+automatic `chatgpt-web/*` rows. Manual routes retain upstream manual limits. Browser-stage payload
 limits remain independently enforced by the adapter; the advertised 900K boundary prevents the
 outer client from compacting a long task between those stages.
 
