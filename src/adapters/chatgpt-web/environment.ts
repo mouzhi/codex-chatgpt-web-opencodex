@@ -218,10 +218,23 @@ function userRevision(value: unknown, expectedTurnId?: string): ChatGptTurnUserR
 export function chatGptTurnUserRevisionHistory(parsed: CodexParsedRequest): ChatGptTurnUserRevision[] {
   const body = record(parsed._rawBody);
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
-  return (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const revisions = input.flatMap(value => {
     const revision = userRevision(value, turnId);
     return revision ? [revision] : [];
   });
+  // Native transient wire items may omit message ids. Only append the current
+  // instruction after the same exact rollout/envelope validation used by replay;
+  // never promote arbitrary idless history into predecessor authority.
+  const latest = input.findLast(value => {
+    const item = record(value);
+    return item?.type === "message" && item.role === "user" && !contextualUserMessage(item);
+  });
+  if (turnId && latest && !userRevision(latest, turnId)) {
+    const transient = transientNativeTurnUserRevision(parsed, turnId);
+    if (transient) revisions.push(transient);
+  }
+  return revisions;
 }
 
 /** The human instruction summarized by a remote compaction request belongs to an earlier turn. */

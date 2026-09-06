@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
+import { chatGptInstructionLineage } from "../src/adapters/chatgpt-web/turn-execution";
 import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
@@ -130,18 +131,26 @@ describe("trusted current Codex environment envelope", () => {
         tools: [],
       });
       expect(extractChatGptTurnUserRevision(request)).toEqual(body.input[1]!.content);
+      const lineage = chatGptInstructionLineage(request);
+      expect(lineage.current).toHaveLength(64);
+      expect(lineage.predecessors.size).toBe(0);
+      expect(chatGptInstructionLineage(structuredClone(request))).toEqual(lineage);
+      body.input.push({ type: "function_call_output", call_id: "another", output: "done" });
+      expect(chatGptInstructionLineage(request)).toEqual(lineage);
 
       body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
         ...turnMetadata,
         sandbox_mode: "read-only",
       });
       expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+      expect(() => chatGptInstructionLineage(request)).toThrow("canonical user instruction");
 
       body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
         ...turnMetadata,
         turn_id: "01a06ac4-7031-7aa0-bcda-ddeaca39b832",
       });
       expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+      expect(() => chatGptInstructionLineage(request)).toThrow("canonical user instruction");
 
       body.client_metadata["x-codex-turn-metadata"] = JSON.stringify(turnMetadata);
       body.input[0]!.content = [{
