@@ -8,9 +8,18 @@ import {
   OPENCODEX_PROVIDER_CONFIG_PURPOSE,
   providerConfig,
   saveConfig,
+  resolveInteractionConnectorIdentities,
 } from "../src/config";
 
 const roots: string[] = [];
+
+test("provider upgrades preserve custom automatic connector across mode switches", () => {
+  expect(resolveInteractionConnectorIdentities("automatic", "production", "Codex Native Mac"))
+    .toMatchObject({ appName: "Codex Native Mac", automaticAppName: "Codex Native Mac" });
+  expect(resolveInteractionConnectorIdentities("manual", "production", "Codex Native Mac"))
+    .toMatchObject({ appName: "Codex Zero Risk", automaticAppName: "Codex Native Mac" });
+  expect(resolveInteractionConnectorIdentities("automatic").appName).toBe("Codex Native2");
+});
 
 afterEach(() => {
   delete process.env.CODEX_CHATGPT_WEB_HOME;
