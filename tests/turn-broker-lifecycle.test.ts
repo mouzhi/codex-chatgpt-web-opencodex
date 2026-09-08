@@ -395,7 +395,7 @@ test("turn broker clamps every namespaced agent wait before it reaches outer Cod
     const [request] = await broker.nextToolBatch(token);
     expect(request).toMatchObject({
       wireName: "multi_agent_v1__wait_agent",
-      arguments: { targets: ["agent_test"], timeout_ms: 10_000 },
+      arguments: { targets: ["agent_test"], timeout_ms: 30_000 },
     });
     broker.completeTool(token, request!.callId, { content: [{ type: "text", text: "timed out" }] });
     await invocation;
