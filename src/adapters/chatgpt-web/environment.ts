@@ -4,6 +4,7 @@ import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../r
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 import { resolveNativeCodexTurnEnvironment, type NativeCodexTurnEnvironment } from "./native-session-environment";
 import { isAcceptedCompactionContinuation } from "./compaction-continuation";
+import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -223,7 +224,9 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
   const revision = latestChatGptTurnUserRevision(parsed, turnId)
     ?? transientNativeTurnUserRevision(parsed, turnId);
-  if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
+  if (!revision) {
+    throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
+  }
   // A pre-turn compact may summarize an earlier user message before native Codex continues
   // under its new turn id without adding a new human message. Accept only our exact completed
   // checkpoint; an arbitrary older prompt is still not a new instruction or a valid handoff.
@@ -759,7 +762,7 @@ function nativeEnvironmentMatchesEnvelope(
     || envelopeNetworkAccess === environment.networkAccess;
 }
 
-function nativeSessionEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment | undefined {
+function nativeSessionEnvironment(parsed: CodexParsedRequest, allowRolloutUserProof = false): ChatGptTurnEnvironment | undefined {
   const metadata = clientTurnMetadata(parsed);
   if (!metadata || metadata.request_kind !== "turn") return undefined;
 
@@ -788,13 +791,25 @@ function nativeSessionEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnviro
   if (!activeUser) return undefined;
   const activeTurnId = itemTurnId(activeUser);
   if (activeTurnId !== undefined && activeTurnId !== turnId) return undefined;
-  const environmentEnvelope = adjacentTransientEnvironment(input, activeUserIndex);
-  if (!environmentEnvelope) return undefined;
-
   const workspaces = record(metadata.workspaces);
   if (metadata.workspaces !== undefined && !workspaces) return undefined;
   const metadataRoots = Object.keys(workspaces ?? {});
   if (metadataRoots.some(root => !isAbsolute(root))) return undefined;
+  const environmentEnvelope = adjacentTransientEnvironment(input, activeUserIndex);
+  if (!environmentEnvelope) {
+    if (!allowRolloutUserProof) return undefined;
+    // Follow-ups can omit both item IDs and the unchanged environment envelope. Authenticate
+    // the latest instruction against the exact current native task, not arbitrary history.
+    const lineage = extractChatGptRootThreadMetadata(parsed);
+    if (!lineage || activeUser.content === undefined) return undefined;
+    return resolveCurrentCodexRolloutEnvironment({
+      codexHome: resolve(process.env.CODEX_NATIVE_HOME?.trim() || join(homedir(), ".codex")),
+      lineage,
+      turnId,
+      currentUserContent: activeUser.content,
+      tools: parsed.context.tools,
+    });
+  }
 
   const environment = resolveNativeCodexTurnEnvironment(threadId, turnId);
   if (!environment) return undefined;
@@ -826,7 +841,7 @@ function transientNativeTurnUserRevision(
   parsed: CodexParsedRequest,
   expectedTurnId: string,
 ): ChatGptTurnUserRevision | undefined {
-  if (!nativeSessionEnvironment(parsed)) return undefined;
+  if (!nativeSessionEnvironment(parsed, true)) return undefined;
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
   for (let index = input.length - 1; index >= 0; index -= 1) {

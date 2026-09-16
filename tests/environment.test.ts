@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -79,6 +79,16 @@ function currentWire(
 }
 
 describe("trusted current Codex environment envelope", () => {
+  test("unproven idless replay is rejected without logging user data", () => {
+    const request = currentWire({ includeIds: false });
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input = [{type: "message", role: "user", content: [{type: "input_text", text: "PRIVATE_BODY_SENTINEL"}]}];
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => extractChatGptTurnUserRevision(request)).toThrow("requires a current-turn user message");
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
   test("recovers a Codex 0.153 first turn whose transient input items have no ids", () => {
     const nativeCodexHome = mkdtempSync(join(tmpdir(), "codex-chatgpt-native-home-"));
     temporaryRoots.push(nativeCodexHome);

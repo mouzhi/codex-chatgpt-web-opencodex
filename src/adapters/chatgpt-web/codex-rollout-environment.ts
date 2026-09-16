@@ -235,6 +235,44 @@ function latestTurnContext(fd: number, size: number): Record<string, unknown> | 
   return item.type === "turn_context" ? record(item.payload) : undefined;
 }
 
+function verifyCurrentUserMessage(fd: number, size: number, turnId: string, content: unknown): void {
+  let position = 0;
+  let carry = Buffer.alloc(0);
+  let activeTurn: unknown;
+  let latestUser: Record<string, unknown> | undefined;
+  while (position < size) {
+    const length = Math.min(ROLLOUT_READ_CHUNK_BYTES, size - position);
+    const chunk = Buffer.alloc(length);
+    if (readSync(fd, chunk, 0, length, position) !== length) {
+      throw new Error("Codex rollout changed during current user lookup");
+    }
+    position += length;
+    const data = Buffer.concat([carry, chunk]);
+    let start = 0;
+    for (let end = data.indexOf(0x0a); end >= 0; end = data.indexOf(0x0a, start)) {
+      const line = data.subarray(start, end);
+      start = end + 1;
+      if (!line.length) continue;
+      if (line.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+      const item = parseJsonLine(line);
+      const payload = record(item.payload);
+      if (item.type === "event_msg" && payload?.type === "task_started") {
+        activeTurn = payload.turn_id;
+        latestUser = undefined;
+      }
+      if (activeTurn === turnId && item.type === "response_item"
+        && payload?.type === "message" && payload.role === "user") latestUser = payload;
+    }
+    carry = Buffer.from(data.subarray(start));
+    if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+  }
+  // A matching ancestor, earlier steering instruction, or partial trailing record is not proof.
+  if (carry.length > 0 || activeTurn !== turnId || !latestUser
+    || !isDeepStrictEqual(latestUser.content, content)) {
+    throw new Error("Codex rollout does not authenticate the current user instruction");
+  }
+}
+
 function verifyHistoricalEnvironmentMessages(
   fd: number,
   size: number,
@@ -611,6 +649,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
   compactionSourceTurnId?: string;
   tools?: readonly CodexTool[];
   historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
+  currentUserContent?: unknown;
 }): ChatGptTurnEnvironment | undefined {
   const { codexHome, lineage, turnId, tools, compactionSourceTurnId } = options;
   const nativeThreadId = CODEX_ID.test(lineage.threadId);
@@ -648,6 +687,9 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
       }
       const environment = environmentFromTurnContext(latest, latest.turn_id as string, tools);
       validateMetadataConsistency(lineage, environment);
+      if (options.currentUserContent !== undefined) {
+        verifyCurrentUserMessage(fd, size, turnId, options.currentUserContent);
+      }
       if (options.historicalEnvironmentMessages) {
         verifyHistoricalEnvironmentMessages(fd, size, turnId, options.historicalEnvironmentMessages);
       }

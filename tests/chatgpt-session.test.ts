@@ -7,7 +7,15 @@ import {
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
   detectChatGptAccountCapabilities,
+  assertNormalChatPage,
 } from "../src/chatgpt-session";
+
+test("normal chat preparation rejects temporary chats, existing conversations, and foreign origins", async () => {
+  await assertNormalChatPage({ url: () => "https://chatgpt.com/" } as any);
+  for (const url of ["https://chatgpt.com/?temporary-chat=true", "https://chatgpt.com/c/abc", "https://example.com/", "https://chatgpt.com/#old"]) {
+    await expect(assertNormalChatPage({ url: () => url } as any)).rejects.toThrow("fresh normal chat");
+  }
+});
 
 test("composer and effort selectors exclude unrelated editable fields and menu buttons", () => {
   const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
