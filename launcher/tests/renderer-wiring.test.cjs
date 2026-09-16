@@ -95,6 +95,7 @@ test("setup preserves session-check failures and never installs without verified
     const run = async () => { installs++; return { mode: "browser-only", stdout: "" }; };
     vm.runInNewContext(source, {
       handle: (_name, handler) => { setup = handler; }, IS_DEV_PROFILE: dev,
+      codexRouteStatePatch: patch => patch,
       stateStore: { read: () => state, update() {} },
       browserHost: { probeAuthentication: async () => browser, returnToIdle: async () => {} },
       runtimeHost: { setupCore: run, setupDevCore: run, runtimeConfigSnapshot: () => ({ config: {} }) },

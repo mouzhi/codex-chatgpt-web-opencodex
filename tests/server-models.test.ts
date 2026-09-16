@@ -197,6 +197,7 @@ test("OpenCodex provider discovery is local, V1-only, and retains its 900K compa
   config.browserHost = "launcher";
   config.browserHostDescriptorPath = "C:\\provider\\launcher-browser.json";
   config.solAvailable = true;
+  config.extraHighAvailable = true;
   config.proAvailable = true;
   let upstreamCalls = 0;
 

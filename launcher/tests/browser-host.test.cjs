@@ -837,7 +837,7 @@ test("launcher authentication requires the Temporary Chat composer and complete 
 
 test("session verification distinguishes a missing login from network and invalid-response failures", async () => {
   const vm = require("node:vm");
-  const url = "https://chatgpt.com/?temporary-chat=true";
+  const url = "https://chatgpt.com/";
   const sessionUrl = "https://chatgpt.com/api/auth/session";
   const response = (payload, overrides = {}) => ({
     ok: true, status: 200, url: sessionUrl,
