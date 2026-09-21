@@ -360,6 +360,7 @@ test("catalog verification reports a failed request instead of requesting anothe
   let tick;
   let payload = { pid: 10, successful_model_catalog_requests: 0, model_catalog_requests: 0, last_model_catalog_result: null };
   vm.runInNewContext(source + "\nstartCatalogVerificationMonitor({ logger, stateStore });", {
+    OWNS_CODEX_ROUTE: true,
     catalogVerificationInFlight: false, catalogVerificationTimer: null, lastOperation: null,
     stopCatalogVerificationMonitor() {},
     runtimeSupervisor: { readConfig: () => ({}), proxyHealthPayload: async () => payload },
