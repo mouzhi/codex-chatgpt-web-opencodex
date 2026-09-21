@@ -60,6 +60,7 @@ export interface SetupOptions {
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
+  experimentalSkillAttachments?: boolean;
   zeroRiskProEnabled?: boolean;
   replaceCodexRoute?: boolean;
   restartService?: boolean;
@@ -152,6 +153,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     extraHighAvailable: before.extraHighAvailable,
     proAvailable: before.proAvailable,
     experimentalBiggerContext: before.experimentalBiggerContext,
+    experimentalSkillAttachments: before.experimentalSkillAttachments,
     zeroRiskProEnabled: before.zeroRiskProEnabled,
     autoApproveToolCalls: before.autoApproveToolCalls,
     controlToken: before.controlToken,
@@ -181,6 +183,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     extraHighAvailable: after.extraHighAvailable,
     proAvailable: after.proAvailable,
     experimentalBiggerContext: after.experimentalBiggerContext,
+    experimentalSkillAttachments: after.experimentalSkillAttachments,
     zeroRiskProEnabled: after.zeroRiskProEnabled,
     autoApproveToolCalls: after.autoApproveToolCalls,
     controlToken: after.controlToken,
@@ -280,6 +283,9 @@ function baseConfig(
     delete config.browserHostDescriptorPath;
   }
   if (options.autoApproveToolCalls !== undefined) config.autoApproveToolCalls = options.autoApproveToolCalls;
+  if (options.experimentalSkillAttachments !== undefined) {
+    config.experimentalSkillAttachments = options.experimentalSkillAttachments;
+  }
   if (options.experimentalBiggerContext !== undefined) {
     config.experimentalBiggerContext = options.experimentalBiggerContext;
   }
@@ -296,6 +302,9 @@ function baseConfig(
     if (options.forceLogin) {
       throw new Error("Zero Risk uses the launcher's existing ChatGPT session; --login is unavailable");
     }
+    if (options.experimentalSkillAttachments === true) {
+      throw new Error("Zero Risk does not support Skills as files");
+    }
     if (options.experimentalBiggerContext === true) {
       throw new Error("Zero Risk does not support Bigger Context");
     }
@@ -306,6 +315,7 @@ function baseConfig(
       throw new Error("Zero Risk requires the Launcher; pass --browser-host-descriptor from the running Launcher");
     }
     config.experimentalBiggerContext = false;
+    config.experimentalSkillAttachments = false;
   }
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
   if (!config.acknowledgedUnofficialAt) {
