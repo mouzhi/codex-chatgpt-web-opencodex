@@ -21,6 +21,24 @@ test("provider upgrades preserve custom automatic connector across mode switches
   expect(resolveInteractionConnectorIdentities("automatic").appName).toBe("Codex Native2");
 });
 
+test("pre-6 provider configs keep regular chats unless explicitly switched off", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-provider-saved-chat-migration-"));
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  const config = defaultConfig("browser-only");
+  config.purpose = OPENCODEX_PROVIDER_CONFIG_PURPOSE;
+  config.browserHost = "launcher";
+  config.browserHostDescriptorPath = join(root, "runtime", "launcher-browser.json");
+  const oldShape = JSON.parse(JSON.stringify(config));
+  delete oldShape.useSavedChats;
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
+  expect(loadConfig().useSavedChats).toBe(true);
+  expect(providerConfig(loadConfig()).chatgptWeb.useSavedChats).toBe(true);
+  oldShape.useSavedChats = false;
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
+  expect(loadConfig().useSavedChats).toBe(false);
+});
+
 afterEach(() => {
   delete process.env.CODEX_CHATGPT_WEB_HOME;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

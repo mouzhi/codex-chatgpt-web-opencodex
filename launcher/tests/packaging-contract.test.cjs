@@ -222,6 +222,7 @@ printf '#!/bin/sh\\nexit 0\\n' > squashfs-root/resources/app.asar.unpacked/asset
         assert.match(result.stderr, /Unsupported Linux architecture/);
         assert.equal(fs.existsSync(path.join(root, "downloads")), false);
       } else {
+        assert.equal(fs.existsSync(path.join(root, "downloads")), true, result.stderr);
         assert.match(fs.readFileSync(path.join(root, "downloads"), "utf8"), new RegExp(`${asset.replaceAll(".", "\\.")}$`, "m"));
         if (valid) {
           assert.equal(result.status, 0, result.stderr);
