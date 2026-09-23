@@ -94,6 +94,8 @@ export interface AppConfig {
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
   experimentalSkillAttachments: boolean;
+  experimentalFreshConversationPerTurn: boolean;
+  useSavedChats: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
@@ -224,6 +226,8 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     proAvailable: false,
     experimentalBiggerContext: false,
     experimentalSkillAttachments: false,
+    experimentalFreshConversationPerTurn: false,
+    useSavedChats: false,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
     controlToken: randomBytes(32).toString("base64url"),
@@ -532,6 +536,15 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`Invalid experimentalSkillAttachments in ${path}`);
   }
   const experimentalSkillAttachments = parsed.experimentalSkillAttachments === true;
+  if (parsed.experimentalFreshConversationPerTurn !== undefined
+    && typeof parsed.experimentalFreshConversationPerTurn !== "boolean") {
+    throw new Error(`Invalid experimentalFreshConversationPerTurn in ${path}`);
+  }
+  const experimentalFreshConversationPerTurn = parsed.experimentalFreshConversationPerTurn === true;
+  if (parsed.useSavedChats !== undefined && typeof parsed.useSavedChats !== "boolean") {
+    throw new Error(`Invalid useSavedChats in ${path}`);
+  }
+  const useSavedChats = parsed.useSavedChats === true;
   if (browserInteractionMode === "manual" && experimentalSkillAttachments) {
     throw new Error(`Zero Risk does not support Skills as files in ${path}`);
   }
@@ -557,6 +570,8 @@ function parseConfig(value: unknown, path: string): AppConfig {
     proAvailable,
     experimentalBiggerContext,
     experimentalSkillAttachments,
+    experimentalFreshConversationPerTurn,
+    useSavedChats,
     zeroRiskProEnabled,
   } as AppConfig;
 }
@@ -618,6 +633,8 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
+      experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,
+      useSavedChats: config.useSavedChats === true,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },
