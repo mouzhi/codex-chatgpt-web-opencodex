@@ -211,6 +211,13 @@ function validateConfig(
   } else if (config.purpose !== undefined) {
     throw new Error("Production launcher refuses a DEV harness configuration");
   }
+  if (config.useSavedChats !== undefined && typeof config.useSavedChats !== "boolean") {
+    throw new Error("Runtime configuration has an invalid useSavedChats");
+  }
+  if (providerOnly && config.useSavedChats === undefined) {
+    // Existing special installations used regular chats before this upstream preference existed.
+    config.useSavedChats = true;
+  }
   if (config.solAvailable === undefined) config = { ...config, solAvailable: true };
   if (config.browserInteractionMode === undefined) {
     config.browserInteractionMode = "automatic";

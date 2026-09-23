@@ -168,6 +168,16 @@ test("launcher runtime ownership cannot cross production and DEV profiles", () =
   }
 });
 
+test("pre-6 OpenCodex provider launcher keeps regular chats during startup", () => {
+  const descriptorPath = path.join(os.tmpdir(), "provider-launcher.json");
+  const legacy = launcherConfig(descriptorPath, { purpose: "opencodex-provider" });
+  assert.equal(validateConfig(legacy, descriptorPath, process.platform, "production", true).useSavedChats, true);
+  assert.equal(validateConfig({ ...legacy, useSavedChats: false }, descriptorPath,
+    process.platform, "production", true).useSavedChats, false);
+  assert.throws(() => validateConfig({ ...legacy, useSavedChats: "yes" }, descriptorPath,
+    process.platform, "production", true), /invalid useSavedChats/);
+});
+
 test("DEV runtime supervision ignores launcher version mismatch and starts only the isolated MCP tunnel", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-tunnel-supervisor-"));
   const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
