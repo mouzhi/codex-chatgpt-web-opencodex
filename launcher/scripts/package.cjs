@@ -27,54 +27,13 @@ function hostTarget(platform = process.platform) {
         : null;
 }
 
-const env = { ...process.env };
-if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
-const builderArgs = [
-  electronBuilderCli,
-  target,
-  "--publish",
-  "never",
-];
-if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
-  builderArgs.push("--config.mac.identity=-");
-}
-if (target === "--linux") {
-  if (!["x64", "arm64"].includes(process.arch)) {
-    throw new Error(`Unsupported Linux AppImage architecture: ${process.arch}`);
-  }
-  builderArgs.push(`--${process.arch}`);
-  validateRuntimeBundle(path.join(root, "build", "runtime"), {
-    version: launcherManifest.version,
-    platform: "linux",
-    arch: process.arch,
-  });
-  if (process.arch === "arm64") {
-    const toolsRoot = env.APPIMAGE_TOOLS_PATH;
-    if (!toolsRoot || !path.isAbsolute(toolsRoot)) {
-      throw new Error("Linux arm64 packaging requires APPIMAGE_TOOLS_PATH from prepare-linux-appimage-tools.cjs");
-    }
-    const library = path.join(toolsRoot, "lib", "arm64", "libnotify.so.4");
-    requireLibnotifySymbol(library);
-    builderArgs.push(
-      `--config.linux.extraFiles.from=${library}`,
-      "--config.linux.extraFiles.to=usr/lib/libnotify.so.4",
-    );
-  }
-}
-
-const staging = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-"));
-const artifactsDirectory = path.join(root, "artifacts");
-
-function runChecked(command, args) {
-  const result = spawnSync(command, args, {
-    cwd: root,
-    env,
-    stdio: "inherit",
-    shell: false,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`${command} failed with status ${result.status ?? "unknown"}`);
+function parsePackagingArgs(args = process.argv.slice(2), platform = process.platform) {
+  const openCodexProvider = args.includes(OPEN_CODEX_PROVIDER_FLAG);
+  const requestedArgs = args.filter(arg => arg !== OPEN_CODEX_PROVIDER_FLAG);
+  const requested = requestedArgs[0];
+  const target = requested || hostTarget(platform);
+  if (!SUPPORTED_TARGETS.includes(target)) {
+    throw new Error(`Unsupported packaging target: ${requested || platform}`);
   }
   const nativeTarget = hostTarget(platform);
   if (target !== nativeTarget) {
@@ -145,6 +104,27 @@ function main() {
     ...builderOverrides(openCodexProvider),
   ];
   if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) builderArgs.push("--config.mac.identity=-");
+  if (target === "--linux") {
+    if (!["x64", "arm64"].includes(process.arch)) {
+      throw new Error(`Unsupported Linux AppImage architecture: ${process.arch}`);
+    }
+    builderArgs.push(`--${process.arch}`);
+    validateRuntimeBundle(path.join(root, "build", "runtime"), {
+      version: launcherManifest.version, platform: "linux", arch: process.arch,
+    });
+    if (process.arch === "arm64") {
+      const toolsRoot = env.APPIMAGE_TOOLS_PATH;
+      if (!toolsRoot || !path.isAbsolute(toolsRoot)) {
+        throw new Error("Linux arm64 packaging requires APPIMAGE_TOOLS_PATH from prepare-linux-appimage-tools.cjs");
+      }
+      const library = path.join(toolsRoot, "lib", "arm64", "libnotify.so.4");
+      requireLibnotifySymbol(library);
+      builderArgs.push(
+        `--config.linux.extraFiles.from=${library}`,
+        "--config.linux.extraFiles.to=usr/lib/libnotify.so.4",
+      );
+    }
+  }
 
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-"));
   const artifactsDirectory = path.join(root, "artifacts");
@@ -171,24 +151,13 @@ function main() {
       throw new Error(`electron-builder produced no distributable artifact in ${staging}`);
     }
     for (const artifact of artifacts) {
-      const publicName = artifact.name.replace(/-linux-x86_64(?=\.)/, "-linux-x64");
+      const publicName = artifact.name.replace(/-linux-x86_64(?=\.)/, "-linux-x64")
+        .replace(/-linux-aarch64(?=\.)/, "-linux-arm64");
       fs.copyFileSync(path.join(staging, artifact.name), path.join(artifactsDirectory, publicName));
     }
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
-  const artifacts = fs.readdirSync(staging, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /\.(?:AppImage|dmg|exe|zip|blockmap)$/i.test(entry.name));
-  if (!artifacts.some((entry) => /\.(?:AppImage|dmg|exe|zip)$/i.test(entry.name))) {
-    throw new Error(`electron-builder produced no distributable artifact in ${staging}`);
-  }
-  for (const artifact of artifacts) {
-    const publicName = artifact.name.replace(/-linux-x86_64(?=\.)/, "-linux-x64")
-      .replace(/-linux-aarch64(?=\.)/, "-linux-arm64");
-    fs.copyFileSync(path.join(staging, artifact.name), path.join(artifactsDirectory, publicName));
-  }
-} finally {
-  fs.rmSync(staging, { recursive: true, force: true });
 }
 
 if (require.main === module) main();

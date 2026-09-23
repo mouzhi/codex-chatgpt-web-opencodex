@@ -3,6 +3,8 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 import { isAcceptedCompactionContinuation, recoverCompactionInstruction } from "./compaction-continuation";
+import { resolveNativeCodexTurnEnvironment, type NativeCodexTurnEnvironment } from "./native-session-environment";
+import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -296,10 +298,21 @@ export function chatGptTurnUserRevisionHistory(parsed: CodexParsedRequest): Chat
   const body = record(parsed._rawBody);
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   const metadata = clientTurnMetadata(parsed);
-  const revisions = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const revisions = input.flatMap(value => {
     const revision = userRevision(value, turnId, metadata);
     return revision ? [revision] : [];
   });
+  // Native current-turn messages may be idless. The exact rollout proof is required before
+  // granting one current revision; older idless history cannot become a new instruction.
+  const latest = input.findLast(value => {
+    const item = record(value);
+    return item?.type === "message" && item.role === "user" && !contextualUserMessage(item);
+  });
+  if (turnId && latest && !userRevision(latest, turnId, metadata)) {
+    const transient = transientNativeTurnUserRevision(parsed, turnId);
+    if (transient) revisions.push(transient);
+  }
   if (revisions.length > 0) return revisions;
   const recovered = recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed));
   return recovered ? [recovered.source] : [];

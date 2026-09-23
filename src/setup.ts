@@ -484,6 +484,9 @@ function prepareSetup(options: SetupOptions): PreparedSetup {
   });
   if (providerOnly) config.purpose = OPENCODEX_PROVIDER_CONFIG_PURPOSE;
   else delete config.purpose;
+  if (providerOnly && existing?.useSavedChats === undefined && options.useSavedChats === undefined) {
+    config.useSavedChats = true;
+  }
   const launcherOwned = config.browserHost === "launcher";
   if (providerOnly && !launcherOwned) {
     throw new Error("Provider-only setup requires the production launcher browser host; pass --browser-host-descriptor");

@@ -3310,23 +3310,6 @@ export class ChatGptBrowserWorker {
         let proofError: unknown;
         try {
           composer = await this.activeComposer(page, 30_000, personalizationSignal);
-          await composer.fill("", {
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await composer.focus({
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await withBrowserTurnAbort(settleChatGptUi(), personalizationSignal);
-          await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, {
-            delay: 25,
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await capture("personalization-proof-mention-triggered");
-          try {
-            composer = await this.activeComposer(page, 30_000, personalizationSignal);
             await composer.fill("", {
               signal: personalizationSignal,
               timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
@@ -3377,7 +3360,6 @@ export class ChatGptBrowserWorker {
         },
         abortSignal,
       );
-    }
     try {
       composer = await this.activeComposer(page, 30_000, abortSignal);
       if (await this.connectorIsSelected(composer, abortSignal)) {
@@ -3892,7 +3874,7 @@ export class ChatGptBrowserWorker {
     const captureDiagnostic = (checkpoint: string): Promise<void> => diagnostics.capture(page, checkpoint);
     try {
       await captureDiagnostic("connector-verification-started");
-      await this.prepareChatSurface(page, captureDiagnostic);
+      await this.prepareChatSurface(page, captureDiagnostic, this.config.useSavedChats);
       // The launcher refreshes its owned ChatGPT document before starting this helper. A second
       // reload here can discard the first catalog's exact mismatch evidence and report a generic
       // menu failure instead of identifying the connector the account actually exposes.
@@ -3919,7 +3901,7 @@ export class ChatGptBrowserWorker {
     proAvailable?: boolean;
   }> {
     const page = await this.ensurePage();
-    await this.prepareChatSurface(page);
+    await this.prepareChatSurface(page, undefined, this.config.useSavedChats);
     const url = page.url();
     if (!detectCapabilities) return { authenticated: true, normalChat: true, url };
     const capabilities = await detectChatGptAccountCapabilities(page);
@@ -3928,7 +3910,7 @@ export class ChatGptBrowserWorker {
 
   private async smokeTestExclusive(abortSignal?: AbortSignal): Promise<{ effort: string; response: string }> {
     const page = await this.ensurePage();
-    await this.prepareChatSurface(page);
+    await this.prepareChatSurface(page, undefined, this.config.useSavedChats);
     const account = await detectChatGptAccountCapabilities(page);
     // Core smoke runs before the optional MCP connector is configured, so it must remain a
     // browser-only transport check. Connector setup has its own explicit verification operation.
@@ -4642,6 +4624,7 @@ export class ChatGptBrowserWorker {
     let turnConnection: Browser | undefined;
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
+    let lastRecoverableSegments: ChatGptMarkdownSegment[] = [];
     const usageWrites: Promise<void>[] = [];
     const submissionRejection = new ChatGptSubmissionRejectionObserver();
     try {
@@ -4856,7 +4839,7 @@ export class ChatGptBrowserWorker {
         await this.runStage(
           turn.traceId,
           "temporary_chat_preparation",
-          browserStageTimeouts.temporaryChatPreparation,
+          browserStageTimeouts.normalChatPreparation,
           () => this.prepareChatSurface(
             page,
             checkpoint => diagnostics.capture(page, checkpoint),

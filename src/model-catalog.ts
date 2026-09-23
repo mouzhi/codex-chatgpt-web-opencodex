@@ -254,7 +254,9 @@ export function buildProviderOnlyModelCatalog(config: AppConfig): JsonObject {
   // browser submission's measured boundary independently.
   const providerContextWindow = 900_000;
   const providerAutoCompactTokenLimit = 900_000;
-  const models = availableChatGptWebModelRoutes(config).map((route, index) => {
+  // Keep pre-6 route identities addressable for existing OpenCodex tasks while showing the new
+  // grouped rows in the picker. The adapter still resolves the hidden legacy slugs.
+  const models = availableChatGptWebModelRoutes(config, true).map((route, index) => {
     const manualLimits = route.interactionMode === "manual"
       ? resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config)
       : undefined;
@@ -263,7 +265,7 @@ export function buildProviderOnlyModelCatalog(config: AppConfig): JsonObject {
       display_name: route.displayName,
       description: route.description,
       input_modalities: route.interactionMode === "manual" ? ["text"] : ["text", "image"],
-      visibility: "list",
+      visibility: route.legacy ? "hide" : "list",
       supported_in_api: true,
       // Provider-only is intentionally pinned to V1: browser-model V2 payloads are encrypted for
       // a different backend and cannot be decoded by this local ChatGPT Web bridge.

@@ -1424,8 +1424,8 @@ test("normal chat reuses its selected connector without reading or toggling pers
     fill: async () => { fillCalls += 1; },
   };
   const page = {
-    url: () => "https://chatgpt.com/?temporary-chat=true",
-    getByRole: personalizedTemporaryChatRole,
+    url: () => "https://chatgpt.com/",
+    getByRole: () => { throw new Error("Normal chat must not inspect personalization controls"); },
     getByText: () => ({ exactConnectorLabel: true }),
     locator: () => ({ filter: () => ({}) }),
   };

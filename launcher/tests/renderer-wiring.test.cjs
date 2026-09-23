@@ -464,11 +464,13 @@ test("fresh-conversation snapshot uses runtime configuration and mode switching 
   };
   const sandbox = {
     handle: (name, handler) => handlers.set(name, handler), runtimeHost,
+    codexRouteStatePatch: patch => patch,
     releaseRetainedConversation: require("../electron/retained-turn-release.cjs").releaseRetainedConversation,
     stateStore: { read: () => ({ ...state }), update: patch => Object.assign(state, patch) },
     browserHost: { activeTraceId: null, turnTabs: new Map(), currentOperation: () => null, snapshot: () => ({}),
       withInteractionModeChange: async (_mode, action) => action() },
     validateBrowserInteractionMode: mode => mode, IS_DEV_PROFILE: false, send() {}, startCatalogVerificationMonitor() {},
+    OWNS_CODEX_ROUTE: true,
     LAUNCHER_PROFILE: { kind: "production", codexHome: "/fixture/codex" }, CORE_HOME: "/fixture/core",
     launcherUserData: "/fixture/launcher", logger: { recent: () => [] },
     GITHUB_URL: "", X_URL: "", CONNECTORS_URL: "", TUNNELS_URL: "", KEYS_URL: "",

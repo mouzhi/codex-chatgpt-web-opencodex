@@ -25,6 +25,7 @@ const {
 } = require("./browser-state.cjs");
 
 const NORMAL_CHAT_URL = "https://chatgpt.com/";
+const TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
 const CHATGPT_ORIGIN = "https://chatgpt.com";
 const IDLE_BROWSER_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3ECodex%20Web%20GPT%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E#codex-web-gpt-browser-host";
 const PRIMARY_VIEW_BOOTSTRAP_TIMEOUT_MS = 10_000;
@@ -2681,6 +2682,12 @@ class BrowserHost {
     const operation = (async () => {
       if (!this.view || this.view.webContents.isDestroyed()) return this.snapshot();
       let url = this.view.webContents.getURL();
+      const expectedChatUrl = typeof this.getUseSavedChats === "function"
+        ? this.getUseSavedChats() ? NORMAL_CHAT_URL : TEMPORARY_CHAT_URL
+        : url === NORMAL_CHAT_URL ? NORMAL_CHAT_URL : TEMPORARY_CHAT_URL;
+      const matchesRequestedChat = (result) => result.requestedChat === true
+        || (result.requestedChat === undefined
+          && (expectedChatUrl === NORMAL_CHAT_URL ? result.normalChat : result.temporary) === true);
       if (url === IDLE_BROWSER_URL) {
         this.setState({
           status: this.state.authenticated ? "ready" : "signed-out",
@@ -2694,16 +2701,16 @@ class BrowserHost {
         return this.snapshot();
       }
       const probe = (contents) => contents.executeJavaScript(`(async () => {
-        const expectedUrl = new URL(${JSON.stringify(TEMPORARY_CHAT_URL)});
+        const expectedUrl = new URL(${JSON.stringify(expectedChatUrl)});
         const readSurface = () => {
           const composer = ${visibleElementScript(COMPOSER_SELECTOR)};
           const actualUrl = new URL(location.href);
           return {
             url: actualUrl.href,
             composer: Boolean(composer),
-            temporary: actualUrl.origin === expectedUrl.origin
-              && actualUrl.pathname === expectedUrl.pathname
-              && actualUrl.searchParams.get("temporary-chat") === "true",
+            requestedChat: actualUrl.href === expectedUrl.href,
+            temporary: actualUrl.href === "https://chatgpt.com/?temporary-chat=true",
+            normalChat: actualUrl.href === "https://chatgpt.com/",
             readyState: document.readyState,
           };
         };
@@ -2764,33 +2771,35 @@ class BrowserHost {
       })()`, true).catch(() => ({
         url: "",
         composer: false,
+        requestedChat: false,
         temporary: false,
+        normalChat: false,
         sessionAuthenticated: false,
         sessionCheckError: "ChatGPT session verification could not inspect the browser. Retry after the page finishes loading.",
         readyState: "unknown",
       }));
       let result = await probe(this.view.webContents);
-      if (!(result.composer && result.temporary && result.sessionAuthenticated)
+      if (!(result.composer && matchesRequestedChat(result) && result.sessionAuthenticated)
         && this.authView
         && !this.authView.webContents.isDestroyed()) {
         const authResult = await probe(this.authView.webContents);
         if (authResult.sessionAuthenticated) {
           const completedAuthView = this.authView;
           this.closeAuthView(completedAuthView, true, false);
-          await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+          await this.view.webContents.loadURL(expectedChatUrl);
           url = this.view.webContents.getURL();
           result = await probe(this.view.webContents);
         }
       }
       if (this.manualOperation === "ChatGPT login"
         && result.sessionAuthenticated
-        && !result.temporary
+        && !matchesRequestedChat(result)
         && !this.view.webContents.isDestroyed()) {
-        await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+        await this.view.webContents.loadURL(expectedChatUrl);
         url = this.view.webContents.getURL();
         result = await probe(this.view.webContents);
       }
-      if (result.composer && result.temporary && result.sessionAuthenticated) {
+      if (result.composer && matchesRequestedChat(result) && result.sessionAuthenticated) {
         if (this.authView && !this.authView.webContents.isDestroyed()) {
           this.closeAuthView(this.authView, true, false);
         }

@@ -913,6 +913,7 @@ test("concurrent authentication probes share the same navigation and allow the n
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map(),
     state: { authenticated: false }, manualOperation: "ChatGPT login",
+    getUseSavedChats: () => false,
     view: { webContents: {
       isDestroyed: () => false,
       getURL: () => "https://chatgpt.com/",
@@ -1244,6 +1245,7 @@ test("OAuth completion is re-proved on the primary Temporary Chat surface before
     activeTraceId: null,
     manualOperation: "ChatGPT login",
     authView: completedAuthView,
+    getUseSavedChats: () => true,
     state: { authenticated: false },
     logger: { info() {} },
     view: {
@@ -1290,6 +1292,7 @@ test("a successful primary login redirect is re-proved on a fresh normal chat be
     activeTraceId: null,
     manualOperation: "ChatGPT login",
     authView: null,
+    getUseSavedChats: () => true,
     state: { authenticated: false },
     logger: { info() {} },
     view: {

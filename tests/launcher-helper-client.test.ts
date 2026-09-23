@@ -191,6 +191,7 @@ test("accepted compaction retires through the helper as completed without hiding
     browserHelperScriptPath: helper, browserDiagnosticsPath: join(root, "diagnostics"),
     storageStatePath: join(root, "unused-state.json"), chromeExecutablePath: join(root, "unused-chrome"),
     turnTimeoutMs: 60_000, headed: true, autoApproveToolCalls: false, useSavedChats: false,
+    preserveTerminalPage: true,
   });
   const logs: string[] = [];
   const logger = spyOn(console, "info").mockImplementation((...args) => { logs.push(args.join(" ")); });

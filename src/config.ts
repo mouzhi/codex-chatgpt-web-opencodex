@@ -544,7 +544,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.useSavedChats !== undefined && typeof parsed.useSavedChats !== "boolean") {
     throw new Error(`Invalid useSavedChats in ${path}`);
   }
-  const useSavedChats = parsed.useSavedChats === true;
+  // Pre-6 provider-only installations used regular chats before this became an upstream option.
+  const useSavedChats = parsed.useSavedChats === true
+    || (parsed.useSavedChats === undefined && parsed.purpose === OPENCODEX_PROVIDER_CONFIG_PURPOSE);
   if (browserInteractionMode === "manual" && experimentalSkillAttachments) {
     throw new Error(`Zero Risk does not support Skills as files in ${path}`);
   }

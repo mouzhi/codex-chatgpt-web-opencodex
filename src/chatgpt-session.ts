@@ -3,6 +3,7 @@ import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export const CHATGPT_TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
 export const CHATGPT_SAVED_CHAT_URL = "https://chatgpt.com/";
+export const CHATGPT_NORMAL_CHAT_URL = CHATGPT_SAVED_CHAT_URL;
 
 export function chatGptNewChatUrl(useSavedChats = false): string {
   return useSavedChats ? CHATGPT_SAVED_CHAT_URL : CHATGPT_TEMPORARY_CHAT_URL;
@@ -197,10 +198,13 @@ export async function assertTemporaryChatPage(page: Page): Promise<void> {
 export async function assertNewChatPage(page: Page, useSavedChats = false): Promise<void> {
   const url = new URL(page.url());
   const expected = new URL(chatGptNewChatUrl(useSavedChats));
-  if (url.origin !== expected.origin || url.pathname !== expected.pathname
-    || (url.searchParams.get("temporary-chat") === "true") === useSavedChats) {
+  if (url.href !== expected.href) {
     throw new Error(`ChatGPT left the requested new ${useSavedChats ? "saved" : "Temporary"} Chat surface (${page.url()})`);
   }
+}
+
+export async function assertNormalChatPage(page: Page): Promise<void> {
+  await assertNewChatPage(page, true);
 }
 
 export async function detectChatGptAccountCapabilities(

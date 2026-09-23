@@ -205,12 +205,18 @@ test("OpenCodex provider discovery is local, V1-only, and retains its 900K compa
   expect(response.status).toBe(200);
   const body = await response.json() as { models: Array<Record<string, unknown>> };
   expect(body.models.map(model => model.slug)).toEqual([
+    "chatgpt-web/gpt-5.6-sol-instant",
+    "chatgpt-web/gpt-5.6-sol",
+    "chatgpt-web/gpt-5.6-pro",
+    "chatgpt-web/gpt-6-pro",
     "chatgpt-web/light",
     "chatgpt-web/medium",
     "chatgpt-web/high",
     "chatgpt-web/extra-high",
     "chatgpt-web/pro",
   ]);
+  expect(body.models.slice(0, 4).every(model => model.visibility === "list")).toBe(true);
+  expect(body.models.slice(4).every(model => model.visibility === "hide")).toBe(true);
   expect(body.models.every(model => model.context_window === 900_000)).toBe(true);
   expect(body.models.every(model => model.max_context_window === 900_000)).toBe(true);
   expect(body.models.every(model => model.auto_compact_token_limit === 900_000)).toBe(true);
