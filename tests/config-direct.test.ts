@@ -33,7 +33,7 @@ test("pre-6 provider configs keep regular chats unless explicitly switched off",
   delete oldShape.useSavedChats;
   writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
   expect(loadConfig().useSavedChats).toBe(true);
-  expect(providerConfig(loadConfig()).chatgptWeb.useSavedChats).toBe(true);
+  expect(providerConfig(loadConfig()).chatgptWeb?.useSavedChats).toBe(true);
   oldShape.useSavedChats = false;
   writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
   expect(loadConfig().useSavedChats).toBe(false);
