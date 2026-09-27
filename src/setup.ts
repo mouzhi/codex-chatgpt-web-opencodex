@@ -48,6 +48,7 @@ const PROVIDER_RUNTIME_PORT = 17_841 as const;
 const PROVIDER_TUNNEL_NAME = "codex-chatgpt-web-opencodex" as const;
 
 export interface SetupOptions {
+  connectorNameSuffix?: string;
   mode: RuntimeMode;
   /** Configure the isolated OpenCodex provider without installing a native Codex route. */
   providerOnly?: boolean;
@@ -267,7 +268,8 @@ function baseConfig(
   Object.assign(config, resolveInteractionConnectorIdentities(
     config.browserInteractionMode,
     profile,
-    options.providerOnly && existing ? existing.automaticAppName : undefined,
+    existing,
+    options.connectorNameSuffix,
   ));
   if (options.subagentProtocol) config.subagentProtocol = options.subagentProtocol;
   config.releaseVersion = VERSION;

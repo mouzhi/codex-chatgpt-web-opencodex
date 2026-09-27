@@ -637,6 +637,7 @@ export async function notifyLauncherTurn(
   reused?: boolean;
   connectorBound?: boolean;
   cancelledByUser?: boolean;
+  authenticationRequired?: boolean;
   trackUsage?: boolean;
 }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
@@ -689,7 +690,13 @@ export async function notifyLauncherTurn(
       if (typeof body.cancelledByUser !== "boolean") {
         throw new Error("Launcher browser control channel returned an invalid turn release result");
       }
-      return { cancelledByUser: body.cancelledByUser };
+      if (body.authenticationRequired !== undefined && typeof body.authenticationRequired !== "boolean") {
+        throw new Error("Launcher browser control channel returned an invalid authentication state");
+      }
+      return {
+        cancelledByUser: body.cancelledByUser,
+        ...(body.authenticationRequired === true ? { authenticationRequired: true } : {}),
+      };
     }
     return {};
   } catch (error) {

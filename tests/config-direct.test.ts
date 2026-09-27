@@ -14,9 +14,9 @@ import {
 const roots: string[] = [];
 
 test("provider upgrades preserve custom automatic connector across mode switches", () => {
-  expect(resolveInteractionConnectorIdentities("automatic", "production", "Codex Native Mac"))
+  expect(resolveInteractionConnectorIdentities("automatic", "production", { automaticAppName: "Codex Native Mac" }))
     .toMatchObject({ appName: "Codex Native Mac", automaticAppName: "Codex Native Mac" });
-  expect(resolveInteractionConnectorIdentities("manual", "production", "Codex Native Mac"))
+  expect(resolveInteractionConnectorIdentities("manual", "production", { automaticAppName: "Codex Native Mac" }))
     .toMatchObject({ appName: "Codex Zero Risk", automaticAppName: "Codex Native Mac" });
   expect(resolveInteractionConnectorIdentities("automatic").appName).toBe("Codex Native2");
 });
