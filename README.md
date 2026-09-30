@@ -1,203 +1,82 @@
-<p align="center">
-  <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
-</p>
+# Codex Web GPT — OpenCodex provider edition
 
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
-</p>
+这是基于 [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web) 的独立 OpenCodex provider fork。
+用于已有 **Codex / CodexHost → OpenCodex** 的环境：Web 模型只是一个下游提供方，既有原生模型继续由 OpenCodex 管理。
 
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.3/codex-web-gpt-6.1.3-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/latest">All releases</a>
-</p>
+当前基线：上游 **6.1.3**，包含本分支的环境识别、续聊和输出留存修复。
+详细的上游介绍见 [上游 README](README.upstream.md)；其中普通版安装/更新步骤不适用于本专用 profile。
 
-<p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
-</p>
+## 本版保留的功能
 
-<p align="center">
-  <img src="assets/demo.gif" width="960" alt="A live ChatGPT Web turn using the native Codex harness">
-</p>
+- 独立 provider、Codex bridge home 和浏览器 profile，固定 `127.0.0.1:17841`。
+- 自动 Web 模型的 900K 聚合上下文、Compatibility V1 子代理，以及历史模型 ID 兼容。
+- 普通保存会话、长任务处理、最终页面留存和最终输出 JSON/Markdown 备份。
+- OpenCodex 转发后丢失消息级来源标记、页面上下文隔开环境和指令时，通过当前原生任务记录校验环境。
+- 可选 Zero Risk / Zero Risk Pro 手动模式，使用独立 Tunnel/连接器；手动模式仍采用上游的上下文限制。
 
-<p align="center">
-  <a href="#get-started">Get started</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
-</p>
+## 源码启动（Windows / macOS）
 
-Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
+先安装 **Bun 1.4.0**、Node.js 24 和 Git。Codex/CodexHost、OpenCodex 应已配置正常。
 
-Full harness mode connects ChatGPT to the current task’s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
-
-<div id="get-started"><a id="quick-start"></a></div>
-
-## Get started
-
-**Available models:** Free/Go → **Luna / Think**. Accounts with reasoning controls → **Instant–High**, plus **Extra High** and **Pro** when available. The launcher detects what your account can use.
-
-1. **Install the launcher** using the download for your system above.
-2. **Sign in to ChatGPT** in the embedded browser and run the browser smoke test.
-3. **Install models** and restart Codex once. In automatic mode, choose a model ending in **(Web)**. Pro versions have separate entries; Sol reasoning is selected through Effort. Zero Risk keeps its dedicated entry.
-4. **For coding with tools**, open **MCP** in the launcher and complete the Full harness setup below.
-
-The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
-
-<details>
-<summary><strong>Terminal install, updates & repair</strong></summary>
-
-Quit the launcher before updating. These installers select the platform and architecture, verify the published checksums, and preserve your ChatGPT profile and launcher settings.
-
-**macOS / Linux**
-
-```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+```sh
+git clone --branch opencodex https://github.com/mouzhi/codex-chatgpt-web-opencodex.git
+cd codex-chatgpt-web-opencodex
+bun run launcher:opencodex
 ```
 
-**Windows PowerShell**
+首次运行会安装锁定依赖、构建启动器并打开专用窗口。登录自己的 ChatGPT 账号，
+在启动器中完成 Full MCP/Tunnel 配置，并按启动器显示的名称创建连接器。
+已有专用 profile 的登录、模式和 Tunnel 会被沿用。
 
-```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+此入口始终使用 `--opencodex-provider`，不安装或覆盖原生 Codex 路由。
+不要使用上游普通版的 `bun run launcher` 或普通版安装器来替代它。
+
+仅准备构建，不打开窗口或修改机器配置：
+
+```sh
+bun run launcher:opencodex --prepare-only
 ```
 
-</details>
+源码启动需要保持启动器进程运行；未打包的 Electron 不提供系统开机自启。
+窗口关闭后的后台行为取决于启动器设置。Windows 可构建独立安装包：
 
-<details>
-<summary><strong>Models, modes & MCP setup</strong></summary>
-
-<a id="modes"></a>
-
-Automatic modes offer Luna/Think when the account has no reasoning selector; otherwise Instant–High, with Extra High and Pro available independently when exposed by the account.
-
-| Mode | Sending messages | Local Codex tools |
-| --- | --- | --- |
-| **Browser-only** | Automatic | No |
-| **Full harness (With Automation)** | Automatic | Yes, through MCP |
-| **Zero Risk** | Paste and send manually | Yes, through a separate MCP connector |
-
-Zero Risk does not read or operate the ChatGPT page. Choose the model and `Codex Zero Risk` connector yourself, paste and send the prepared prompt, then confirm **Sent** in the launcher. Automatic models ending in **(Web)** expose their supported Effort choices in Codex. Instant and each Pro version have separate entries to preserve their context budgets; older saved model entries keep their original fixed mode.
-
-<a id="full-harness"></a>
-
-### Full harness
-
-Full mode connects ChatGPT's tool calls back to the current Codex task through the official
-[OpenAI tunnel-client](https://github.com/openai/tunnel-client). The tunnel is outbound: it does
-not expose a public IP, open an inbound port, or require router forwarding.
-
-The launcher's **MCP** page guides the complete setup. For the exact clicks, see the
-[video walkthroughs](TROUBLESHOOTING.md).
-
-> **Limits**
->
-> See [Limits](https://github.com/miuuyy/codex-chatgpt-web/discussions/309) for the current
-> ChatGPT message allowances for **GPT-5.6 Sol Pro** and **GPT-6 Astra**. Context limits depend on
-> the account type and selected effort. Plus Medium/High uses a measured 90,000-token window, or
-> up to 270,000 tokens with experimental **3× context** enabled, with native Codex compaction
-> supported throughout.
-
-1. Finish the required setup, open **MCP**, create the Tunnel and regular API key, then press
-   **Connect harness**.
-2. Enable ChatGPT **Developer Mode** and create a new Tunnel connector named exactly
-   **Codex Native2**, with **Authentication: None** and **Allow all actions**.
-3. Run **Verify runtime** to confirm that **Codex Native2** is attached and available.
-
-Write/modify actions also require the ChatGPT workspace and its administrator policy to permit
-them. See
-[developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
-Unexpected approval prompts fail closed unless `--auto-approve-tool-calls` is explicitly enabled;
-that option clicks **Allow once**, never a permanent grant.
-
-</details>
-
-<details>
-<summary><strong>Diagnostics & subagents</strong></summary>
-
-<a id="operations"></a>
-
-Use **Activity** for safe local diagnostics and **Settings → Run doctor** for end-to-end health.
-Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
-**Save chats in ChatGPT** keeps task conversations in ChatGPT history. Off by default; independent of **New browser chat for each turn**.
-Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
-
-New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
-feature settings and enables plaintext Web-to-Web V2 delegation. Restart Codex and start a new task
-after changing the protocol:
-
-```bash
-codex-chatgpt-web subagents status
-codex-chatgpt-web subagents compatibility-v1
-codex-chatgpt-web subagents native
+```sh
+bun run --cwd launcher package:win:opencodex
 ```
 
-</details>
+## 添加 OpenCodex 提供方
 
-<details>
-<summary><strong>Requirements & security</strong></summary>
+按 [模板](examples/opencodex-provider.json) 添加 `codex-with-chatgpt` 提供方：
 
-<a id="limitations-and-security"></a>
+| 项目 | 值 |
+|---|---|
+| Adapter | `openai-responses` |
+| Base URL | `http://127.0.0.1:17841/v1` |
+| Auth mode | `local`，无需 API key |
+| Allow private network | `true`，仅此 loopback 提供方 |
+| Live models | `false` |
+| Automatic context window | `900000` |
 
-- This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;
-  drift fails explicitly instead of silently switching model or transport.
-- Browser state is a sensitive login artifact, and the loopback listener is reachable by processes
-  running as the same local user. Never share the launcher profile; use a trusted workstation.
-- Release packages currently target macOS 13+ (arm64/x64), Windows x64, and Linux x64. Runtime,
-  tests, and packaging are gated on all three in CI; account-bound browser and MCP flows use the
-  separate [release validation](docs/release-validation.md).
-- Builds are not yet platform-signed, so Gatekeeper or SmartScreen may warn. The installers verify
-  the published SHA-256 manifest before installation.
+模板是一个 provider 对象，不是完整的 OpenCodex 配置。请合并到既有配置，勿覆盖整个配置文件。
+新用户只需启用账号支持的四个新模型条目；旧的 Light/Medium/High/Extra High/Pro 仅用于旧任务兼容。
+具体操作与模式切换见 [运行说明](docs/opencodex-provider.md)。
 
-Read the complete [architecture](docs/architecture.md) and
-[security model](docs/security-model.md) before enabling full mode. Report vulnerabilities through
-[SECURITY.md](SECURITY.md).
+## 每位使用者自己的配置
 
-Temporary Chat is a [ChatGPT privacy mode](https://help.openai.com/en/articles/8914046-temporary-chat-faq); prompts are still processed by OpenAI.
+源码和安装包不包含任何登录、cookie、API key 或 Tunnel ID。
+每位使用者配置自己的账号、Tunnel、runtime key 和连接器；不要拷贝他人的 provider home 或浏览器 profile。
+自动/手动模式的 Tunnel 应分开，多个连接器共用账号时使用不同名称。
 
-Validation coverage: [release validation](docs/release-validation.md).
+本地状态保存于用户目录下的 `.codex-chatgpt-web-opencodex` 和 `.codex-opencodex-web-bridge`。
+自动模式最终输出在 `logs/final-outputs`；这些内容也不应提交到 Git。
 
-This is independent software and is not affiliated with or endorsed by OpenAI. Use it only with
-your own account and in accordance with applicable [Terms of Use](https://openai.com/policies/terms-of-use/)
-and workspace policies; it does not bypass authentication or access controls.
+这是非官方 ChatGPT Web 桥接。网页、模型菜单或连接器变化仍可能需要适配。
+Zero Risk 是手动交互模式名称，不是账号不会受到限制的保证。
 
-</details>
+## 维护和同步
 
-<details>
-<summary><strong>Run from source & develop</strong></summary>
+`opencodex` 是本 fork 的默认维护分支，`main` 保持上游分支身份。
+每次合并上游版本、通过测试后，将专用提交推送到 `opencodex`，并打独立快照标签。
+不要用 GitHub 的覆盖同步操作替代合并，否则会丢失专用修改。
 
-<a id="development"></a>
-
-```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
-cd codex-chatgpt-web && \
-bun run app
-```
-
-This source path requires Bun 1.4.0. The command installs locked dependencies and opens the app.
-
-```bash
-bun run app
-bun run dev:launcher
-bun run src/cli.ts dev status
-bun run dev:chat compaction-lab "Reply with exactly: DEV READY"
-bun run verify
-bun run smoke:subagents
-bun run app:package
-```
-
-`dev:launcher` uses a separate profile and account under `~/.codex-chatgpt-web-dev`. `dev:chat` exercises the real browser and compaction paths with explicit simulated tool results, without changing your normal Codex route. See the [DEV chat harness](docs/dev-chat.md) for setup and commands.
-
-</details>
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&theme=dark&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-  </picture>
-</a>
-
----
-
-[Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
-
-Also by me: <img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — local, near-real-time custom voices for ChatGPT and Codex.
+完整步骤见 [上游同步规范](docs/opencodex-upstream-sync.md)。本项目保留上游 MIT License 和署名。

@@ -1,0 +1,14 @@
+{
+  "adapter": "openai-responses",
+  "baseUrl": "http://127.0.0.1:17841/v1",
+  "authMode": "local",
+  "allowPrivateNetwork": true,
+  "liveModels": false,
+  "contextWindow": 900000,
+  "models": [
+    "chatgpt-web/gpt-5.6-sol-instant",
+    "chatgpt-web/gpt-5.6-sol",
+    "chatgpt-web/gpt-5.6-pro",
+    "chatgpt-web/gpt-6-pro"
+  ]
+}

@@ -22,7 +22,7 @@ const expected = [
   ["src/version.ts", `export const VERSION = ${JSON.stringify(packageVersion)};`],
   ["src/adapters/chatgpt-web/mcp-server.ts", "version: VERSION"],
   ["scripts/install.sh", `VERSION=\"\${CODEX_CHATGPT_WEB_VERSION:-${packageVersion}}\"`],
-  ["README.md", `requires Bun ${bunVersion}.`],
+  ["README.upstream.md", `requires Bun ${bunVersion}.`],
   ["README.zh-CN.md", `Bun ${bunVersion}`],
   ["scripts/install.sh", `Bun-${bunVersion}.md`],
   ["scripts/generate-third-party-notices.ts", `Bun ${bunVersion}`],
@@ -35,7 +35,7 @@ const expected = [
 for (const [path, needle] of expected) {
   if (!readFileSync(resolve(root, path), "utf8").includes(needle)) throw new Error(`${path} is not synchronized to ${packageVersion}`);
 }
-for (const path of ["README.md", "README.zh-CN.md", "README.ja.md", "README.ko.md"]) {
+for (const path of ["README.upstream.md", "README.zh-CN.md", "README.ja.md", "README.ko.md"]) {
   const readme = readFileSync(resolve(root, path), "utf8");
   for (const target of ["win-x64.exe", "mac-arm64.dmg", "mac-x64.dmg", "linux-x64.AppImage"]) {
     const download = `/releases/download/v${packageVersion}/codex-web-gpt-${packageVersion}-${target}`;

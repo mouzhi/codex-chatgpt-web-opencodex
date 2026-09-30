@@ -43,6 +43,7 @@
     "smoke:subagents:live": "bun run scripts/smoke-codex-web-subagents.ts",
     "smoke:environment": "bun run scripts/smoke-codex-environment.ts",
     "launcher": "bun run scripts/start-launcher.ts",
+    "launcher:opencodex": "bun run scripts/start-opencodex-provider.ts",
     "app": "bun run scripts/start-launcher.ts",
     "app:package": "bun run --cwd launcher package",
     "app:smoke": "bun run --cwd launcher smoke:package",
