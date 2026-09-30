@@ -8,7 +8,7 @@ const launcherRoot = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(launcherRoot, "..");
 const read = (...parts) => fs.readFileSync(path.join(repositoryRoot, ...parts), "utf8");
 
-const englishReadme = read("README.md");
+const englishReadme = read("README.upstream.md");
 const chineseReadme = read("README.zh-CN.md");
 const japaneseReadme = read("README.ja.md");
 const koreanReadme = read("README.ko.md");

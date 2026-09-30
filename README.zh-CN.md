@@ -1,4 +1,4 @@
-> OpenCodex provider 特殊版请先阅读 [本 fork 的启动与配置说明](README.md)。
+> OpenCodex provider 特殊版的启动与配置说明位于根目录 `README.md`。
 > 使用 `bun run launcher:opencodex`；以下是上游普通版说明，不应以普通版安装器替换专用 profile。
 
 <p align="center">
