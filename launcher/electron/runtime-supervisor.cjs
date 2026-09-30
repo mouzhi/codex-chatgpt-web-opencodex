@@ -16,6 +16,7 @@ const {
   OPENCODEX_PROVIDER_RUNTIME_HOST,
   OPENCODEX_PROVIDER_RUNTIME_PORT,
 } = require("./profile.cjs");
+const { windowsTrustEnvironment } = require("./windows-trust.cjs");
 
 const RESTART_WINDOW_MS = 60_000;
 const MAX_RESTARTS_PER_WINDOW = 5;
@@ -546,10 +547,10 @@ class RuntimeSupervisor {
     const child = spawn(invocation.executable, invocation.args, {
       cwd: invocation.cwd,
       detached: DETACH_OWNED_CHILD,
-      env: {
+      env: windowsTrustEnvironment({
         ...process.env,
         CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
-      },
+      }, this.platform),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });

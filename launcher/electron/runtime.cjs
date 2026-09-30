@@ -21,6 +21,7 @@ const {
   OPENCODEX_PROVIDER_RUNTIME_HOST,
   OPENCODEX_PROVIDER_RUNTIME_PORT,
 } = require("./profile.cjs");
+const { windowsTrustEnvironment } = require("./windows-trust.cjs");
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_RUNTIME_LOG_LINE_CHARS = 64 * 1024;
@@ -641,13 +642,11 @@ class RuntimeHost {
         ? embeddedRuntimeInvocation({ app: this.app, sourceRoot: this.sourceRoot, args })
         : this.command(args);
       const result = await new Promise((resolve, reject) => {
-        const environment = options.environment
-          ? { ...options.environment }
-          : { ...process.env };
-        Object.assign(environment, {
+        const environment = windowsTrustEnvironment({
+          ...(options.environment ?? process.env),
           CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
           ...(options.env || {}),
-        });
+        }, this.platform);
         const child = spawn(invocation.executable, invocation.args, {
           cwd: invocation.cwd,
           detached: DETACH_OWNED_CHILD,
