@@ -12,7 +12,7 @@ const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "prelo
 
 test("Bigger Context waits for startup and route recovery without invalidating healthy setup", async () => {
   const vm = require("node:vm");
-  for (const fails of [false, true]) {
+  for (const [providerOnly, fails] of [[false, false], [false, true], [true, false], [true, true]]) {
     let completeAuthentication;
     const startupAuthenticationRefresh = new Promise(resolve => { completeAuthentication = resolve; });
     let finishRuntimeStartup;
@@ -27,12 +27,15 @@ test("Bigger Context waits for startup and route recovery without invalidating h
     const context = vm.createContext({
       runtimeStartup, finishRuntimeStartup: () => { startupSettled = true; finishRuntimeStartup(); },
       startupAuthenticationRefresh, logger, stateStore, IS_DEV_PROFILE: false,
+      IS_PROVIDER_ONLY_PROFILE: providerOnly, OWNS_CODEX_ROUTE: !providerOnly,
+      assertProviderRuntimeEndpoint() {},
       ipcMain: { on() {} }, registerLoggedIpc: (_ipc, _logger, channel, handler) => handlers.set(channel, handler),
       send() {}, publishOperation() {}, startCatalogVerificationMonitor() {},
       restoreCodexRouteAfterRuntimeFailure: async () => { calls.push("recovery"); return {}; },
       limitsController: { snapshot: () => ({ enabled: false }) },
       runtimeSupervisor: {
         readConfig: () => config,
+        readSetupConfig: () => config,
         startIfConfigured: async () => {
           calls.push("startup");
           if (fails) throw new Error("actual startup failure");
@@ -51,6 +54,8 @@ test("Bigger Context waits for startup and route recovery without invalidating h
         },
       },
     });
+    vm.runInContext(electronMain.slice(electronMain.indexOf("function codexRouteStatePatch("),
+      electronMain.indexOf("function assertProviderRuntimeEndpoint(")), context);
     vm.runInContext(electronMain.slice(electronMain.indexOf("function registerIpc("), electronMain.indexOf("async function requestQuit("))
       + "\nregisterIpc({ logger, stateStore });", context);
     const start = electronMain.indexOf("} else void (async () => {");
@@ -61,9 +66,11 @@ test("Bigger Context waits for startup and route recovery without invalidating h
     assert.deepEqual(calls, []);
     completeAuthentication();
     await setting;
-    assert.deepEqual(calls, fails ? ["startup", "recovery", "setting"] : ["startup", "route", "setting"]);
+    assert.deepEqual(calls, fails ? ["startup", "recovery", "setting"]
+      : providerOnly ? ["startup", "setting"] : ["startup", "route", "setting"]);
     assert.equal(state.experimentalBiggerContext, true);
     assert.equal(state.coreSetupComplete, !fails, "only a real startup failure may invalidate setup");
+    if (providerOnly) assert.equal(state.codexRestartRequired, false);
   }
 });
 
