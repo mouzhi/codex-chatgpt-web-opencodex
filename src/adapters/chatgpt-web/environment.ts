@@ -52,6 +52,7 @@ export const CHATGPT_TURN_REVISION_CONFLICT_MESSAGE =
   "ChatGPT web current user message conflicts with native Codex turn_id metadata";
 
 export class MissingTrustedCodexEnvironmentError extends Error {
+  routedRecoveryReason?: RoutedCodexEnvironmentRecoveryReason;
   constructor(field: string) {
     super(`ChatGPT web turn is missing ${field} in trusted Codex environment context`);
     this.name = "MissingTrustedCodexEnvironmentError";
@@ -890,6 +891,87 @@ function nativeEnvironmentMatchesEnvelope(
     || /network access is enabled/i.test(text);
   return environment.sandboxType === "dangerFullAccess"
     || envelopeNetworkAccess === environment.networkAccess;
+}
+
+const NATIVE_ENVIRONMENT_ID_FIELDS = [
+  "installation_id", "session_id", "thread_id", "turn_id", "window_id", "context_window_id",
+] as const;
+
+export type RoutedCodexEnvironmentRecoveryReason =
+  | "identity-unavailable" | "non-root-turn" | "current-user-unavailable"
+  | "attributed-or-late-envelope" | "malformed-envelope" | "no-envelope"
+  | "native-context-unavailable" | "authority-mismatch";
+
+/** Field presence only: never log prompts, identity values, workspace paths or credentials. */
+export function chatGptTrustedEnvironmentDiagnostics(parsed: CodexParsedRequest): {
+  requestKind: "turn" | "compaction" | "other";
+  missingIdentityFields: string[];
+  environmentItems: number;
+  provenanceItems: number;
+} {
+  const metadata = clientTurnMetadata(parsed);
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  return {
+    requestKind: metadata?.request_kind === "turn" ? "turn"
+      : metadata?.request_kind === "compaction" ? "compaction" : "other",
+    missingIdentityFields: NATIVE_ENVIRONMENT_ID_FIELDS.filter(field => !nonEmptyMetadataString(metadata ?? {}, field)),
+    environmentItems: input.filter(value => hasEnvironmentContextFragment(record(value))).length,
+    provenanceItems: input.filter(value => record(value)?.internal_chat_message_metadata_passthrough !== undefined).length,
+  };
+}
+
+/**
+ * Routed Responses can lose item provenance while desktop page/skill context separates the
+ * native environment from its user instruction. Only the exact current local task can recover
+ * authority in that shape. Caller XML remains a claim that must match the native permissions.
+ */
+export function recoverRoutedCurrentCodexEnvironment(
+  parsed: CodexParsedRequest,
+  codexHome: string,
+  sqliteHome?: string,
+  onRejected?: (reason: RoutedCodexEnvironmentRecoveryReason) => void,
+): ChatGptTurnEnvironment | undefined {
+  const reject = (reason: RoutedCodexEnvironmentRecoveryReason): undefined => { onRejected?.(reason); return undefined; };
+  const metadata = clientTurnMetadata(parsed);
+  if (metadata?.request_kind !== "turn"
+    || NATIVE_ENVIRONMENT_ID_FIELDS.some(field => !nonEmptyMetadataString(metadata, field))) return reject("identity-unavailable");
+  const lineage = extractChatGptRootThreadMetadata(parsed);
+  if (!lineage) return reject("non-root-turn");
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const activeIndex = input.findLastIndex(value => isNativeInstruction(record(value), metadata));
+  const activeUser = record(input[activeIndex]);
+  if (!activeUser || activeUser.content === undefined
+    || (itemTurnId(activeUser) !== undefined && itemTurnId(activeUser) !== metadata.turn_id)) return reject("current-user-unavailable");
+  const claims: string[] = [];
+  for (let index = 0; index < input.length; index++) {
+    const item = record(input[index]);
+    if (!hasEnvironmentContextFragment(item)) continue;
+    // Do not turn an explicitly attributed update or a later delta into a routed-history claim.
+    if (index >= activeIndex || item.internal_chat_message_metadata_passthrough !== undefined) return reject("attributed-or-late-envelope");
+    const texts = typeof item.content === "string" ? [item.content]
+      : Array.isArray(item.content) ? item.content.map(part => record(part)?.text) : [];
+    const envelopes = texts.filter((text): text is string => typeof text === "string"
+      && /^<\/?environment_context\b/i.test(text.trimStart()));
+    if (envelopes.length !== 1
+      || !/^\s*<environment_context>[\s\S]*<\/environment_context>\s*$/.test(envelopes[0]!)
+      || [...envelopes[0]!.matchAll(/<\/?environment_context\b/g)].length !== 2) return reject("malformed-envelope");
+    claims.push(envelopes[0]!);
+  }
+  if (claims.length === 0) return reject("no-envelope");
+  const environment = resolveCurrentCodexRolloutEnvironment({
+    codexHome, ...(sqliteHome ? { sqliteHome } : {}), lineage,
+    turnId: metadata.turn_id as string, currentUserContent: activeUser.content, tools: parsed.context.tools,
+  });
+  if (!environment) return reject("native-context-unavailable");
+  const native: NativeCodexTurnEnvironment = {
+    cwd: environment.cwd, roots: environment.roots, writableRoots: environment.writableRoots,
+    sandboxType: environment.sandboxPolicy.type,
+    networkAccess: environment.sandboxPolicy.type === "dangerFullAccess" || environment.sandboxPolicy.networkAccess,
+  };
+  if (!claims.every(claim => nativeEnvironmentMatchesEnvelope(claim, native))) return reject("authority-mismatch");
+  return environment;
 }
 
 function nativeSessionEnvironment(parsed: CodexParsedRequest, allowRolloutUserProof = false): ChatGptTurnEnvironment | undefined {
