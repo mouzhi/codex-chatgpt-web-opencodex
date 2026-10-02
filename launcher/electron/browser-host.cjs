@@ -522,7 +522,7 @@ class BrowserHost {
   tabSnapshot(tab) {
     const snapshot = {
       id: tab.id,
-      traceId: tab.traceId,
+      traceId: tab.traceId ?? tab.previewTraceId,
       title: tab.label,
       status: tab.status,
       loading: tab.loading === true,
@@ -2549,6 +2549,11 @@ class BrowserHost {
         tab.conversationKey = undefined;
         tab.connectorIdentity = undefined;
         tab.connectorBound = false;
+        // Keep the document for human review, not as a lease for this trace. Automatic retries
+        // must acquire a fresh owned surface; a failed preview cannot authenticate continuation.
+        // UI correlation uses previewTraceId, while heartbeat/end/start ownership uses traceId.
+        tab.previewTraceId = traceId;
+        tab.traceId = undefined;
       }
       this.selectedTabId = tab.id;
       this.showWindow?.();

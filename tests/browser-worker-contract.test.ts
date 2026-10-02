@@ -597,7 +597,7 @@ test("chat preparation preserves page-read and composer errors instead of report
     prepareChatSurface(page: unknown): Promise<unknown>;
   }).prepareChatSurface;
   for (const error of [new ChatGptBrowserObservationTimeoutError(5_000), new Error("ChatGPT composer is unavailable")]) {
-    const page = { url: () => "https://chatgpt.com/?temporary-chat=true" };
+    const page = { url: () => "https://chatgpt.com/?temporary-chat=true", waitForFunction: async () => {} };
     await expect(prepare.call({ activeComposer: async () => { throw error; } }, page)).rejects.toBe(error);
   }
 });

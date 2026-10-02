@@ -2744,17 +2744,25 @@ export class ChatGptBrowserWorker {
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     useSavedChats = false,
+    abortSignal?: AbortSignal,
   ): Promise<Locator> {
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
     const targetUrl = chatGptNewChatUrl(useSavedChats);
-    if (page.url() !== targetUrl) {
-      await page.goto(targetUrl, {
+    const navigated = page.url() !== targetUrl;
+    if (navigated) {
+      await withBrowserTurnAbort(page.goto(targetUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
-      });
+      }), abortSignal);
+    }
+    // Navigation/reload invalidates Electron's background renderer viewport. DOM readiness can
+    // precede did-finish-load, which restores the owned view's emulation. A rendered composer
+    // alone does not prove that its controls can receive pointer input (innerWidth may be 0).
+    await waitForOperationalChatGptViewport(page, abortSignal);
+    if (navigated) {
       await captureDiagnostic?.(useSavedChats ? "saved-chat-navigation-complete" : "temporary-chat-navigation-complete");
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
@@ -4986,10 +4994,11 @@ export class ChatGptBrowserWorker {
           turn.traceId,
           "temporary_chat_preparation",
           browserStageTimeouts.normalChatPreparation,
-          () => this.prepareChatSurface(
+          stageSignal => this.prepareChatSurface(
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
             this.config.useSavedChats,
+            turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
           ),
         );
       }
@@ -5195,12 +5204,15 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "connector_catalog_refresh",
             browserStageTimeouts.normalChatPreparation,
-            async () => {
-              await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+            async stageSignal => {
+              const preparationSignal = turn.abortSignal
+                ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal;
+              await withBrowserTurnAbort(page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }), preparationSignal);
               await this.prepareChatSurface(
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
                 this.config.useSavedChats,
+                preparationSignal,
               );
               mode = await this.selectModelAndEffort(
                 page,
