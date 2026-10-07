@@ -2358,7 +2358,7 @@ test("each new tool prompt verifies its connector after the previous Send cleare
   expect(prompts).toEqual(["first task", "follow-up task"]);
 });
 
-test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
+test("image attachments ignore another composer's upload input and verify exact file tiles", async () => {
   const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
   const calls: Array<[string, string?]> = [];
   const send = {
@@ -2380,6 +2380,10 @@ test("image attachment readiness uses exact file tiles and not localized remove-
       };
     },
     locator: (selector: string) => {
+      if (selector === 'input[data-testid="upload-photos-input"], input[type="file"][multiple]:not([accept])') {
+        calls.push(["ownedUpload"]);
+        return input;
+      }
       if (selector.startsWith(".composer-attachment-surface")) return {};
       expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
       return send;
@@ -2402,7 +2406,7 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   };
   const page = {
     locator: (selector: string) => {
-      if (selector === 'input[data-testid="upload-photos-input"], form[data-chatgpt-composer] input[type="file"][multiple]:not([accept])') return input;
+      if (selector.includes('input[')) throw new Error("strict mode violation: upload locator resolved to 2 elements");
       if (selector === '[role="alert"]') {
         return { allInnerTexts: async () => [] };
       }
@@ -2418,11 +2422,30 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   });
 
   expect(calls).toEqual([
+    ["ownedUpload"],
     ["inputReady"],
     ["setFiles", "codex-input-image-1.png"],
     ["fileTile", "codex-input-image-1.png"],
     ["sendEnabled"],
   ]);
+});
+
+test("ambiguous upload inputs inside the active composer still reject without uploading", async () => {
+  let uploaded = false;
+  const input = {
+    waitFor: async () => { throw new Error("strict mode violation: upload locator resolved to 2 elements"); },
+    setInputFiles: async () => { uploaded = true; },
+  };
+  const composerForm = { locator: () => input };
+  const composer = { locator: () => composerForm };
+  const page = { locator: () => input };
+  const attachFiles = (ChatGptBrowserWorker.prototype as unknown as {
+    attachFiles(page: unknown, prompt: unknown): Promise<void>;
+  }).attachFiles;
+  await expect(attachFiles.call({ activeComposer: async () => composer }, page, {
+    images: [{ ref: "fixture", imageUrl: "data:image/png;base64,AA==" }],
+  })).rejects.toThrow("strict mode violation");
+  expect(uploaded).toBeFalse();
 });
 
 test("effort slider ARIA state fails closed on malformed and unsupported ranges", () => {

@@ -4200,7 +4200,9 @@ export class ChatGptBrowserWorker {
     if (files.length === 0) return;
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
-    const input = page.locator('input[data-testid="upload-photos-input"], form[data-chatgpt-composer] input[type="file"][multiple]:not([accept])');
+    // Both ChatGPT layouts may keep an inactive composer's hidden input attached. Bind the
+    // upload to the already-validated editor's form; strict matching still rejects ambiguity.
+    const input = composerForm.locator('input[data-testid="upload-photos-input"], input[type="file"][multiple]:not([accept])');
     await input.waitFor({ state: "attached", timeout: 20_000 });
     await input.setInputFiles(files);
     try {
