@@ -72,6 +72,8 @@ test("proxies official /models auth and query, then appends grouped and legacy W
   };
   expect(body.models.map(model => model.slug)).toEqual([
     "gpt-5.6-sol",
+    "chatgpt-web/gpt-6-sol-instant",
+    "chatgpt-web/gpt-6-sol",
     "chatgpt-web/gpt-5.6-sol-instant",
     "chatgpt-web/gpt-5.6-sol",
     "chatgpt-web/gpt-5.6-pro",
@@ -193,7 +195,7 @@ test("ChatGPT-only native catalog rows do not turn model discovery into a 502", 
   const body = await response.json() as { models: Array<{ slug: string; supported_in_api?: boolean }> };
   expect(body.models[0]).toMatchObject({ slug: "gpt-chatgpt-only", supported_in_api: false });
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")))
-    .toHaveLength(5);
+    .toHaveLength(7);
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/"))
     .every(model => model.supported_in_api === true)).toBe(true);
 });
@@ -222,8 +224,10 @@ test("OpenCodex provider discovery is local, V1-only, and retains its 900K compa
 
   expect(response.status).toBe(200);
   const body = await response.json() as { models: Array<Record<string, unknown>> };
-  expect(body.models.map(model => model.slug)).toEqual([
-    "chatgpt-web/gpt-5.6-sol-instant",
+    expect(body.models.map(model => model.slug)).toEqual([
+      "chatgpt-web/gpt-6-sol-instant",
+      "chatgpt-web/gpt-6-sol",
+      "chatgpt-web/gpt-5.6-sol-instant",
     "chatgpt-web/gpt-5.6-sol",
     "chatgpt-web/gpt-5.6-pro",
     "chatgpt-web/gpt-6-pro",
@@ -233,8 +237,8 @@ test("OpenCodex provider discovery is local, V1-only, and retains its 900K compa
     "chatgpt-web/extra-high",
     "chatgpt-web/pro",
   ]);
-  expect(body.models.slice(0, 4).every(model => model.visibility === "list")).toBe(true);
-  expect(body.models.slice(4).every(model => model.visibility === "hide")).toBe(true);
+    expect(body.models.slice(0, 6).every(model => model.visibility === "list")).toBe(true);
+    expect(body.models.slice(6).every(model => model.visibility === "hide")).toBe(true);
   expect(body.models.every(model => model.context_window === 900_000)).toBe(true);
   expect(body.models.every(model => model.max_context_window === 900_000)).toBe(true);
   expect(body.models.every(model => model.auto_compact_token_limit === 900_000)).toBe(true);

@@ -3,7 +3,7 @@
 这是基于 [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web) 的独立 OpenCodex provider fork。
 用于已有 **Codex / CodexHost → OpenCodex** 的环境：Web 模型只是一个下游提供方，既有原生模型继续由 OpenCodex 管理。
 
-当前基线：上游 **6.1.5**，包含本分支的环境识别、续聊、视口恢复、尾段身份和输出留存修复。
+当前基线：上游 **6.1.6**，包含本分支的环境识别、续聊、视口恢复、附件定位和输出留存修复。
 详细的上游介绍见 [上游 README](README.upstream.md)；其中普通版安装/更新步骤不适用于本专用 profile。
 
 ## 本版保留的功能
