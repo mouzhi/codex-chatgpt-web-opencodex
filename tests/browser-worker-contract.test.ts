@@ -609,6 +609,7 @@ test("cancelled chat preparation stops navigation and composer polling", async (
     const page = {
       url: () => stage === "composer" ? "https://chatgpt.com/?temporary-chat=true" : "about:blank",
       goto: () => { navigations += 1; controller.abort(); return new Promise(() => {}); },
+      waitForFunction: async () => {}, // The provider's viewport barrier precedes composer polling.
       locator: () => composers,
     };
     if (stage === "before-navigation") controller.abort();
