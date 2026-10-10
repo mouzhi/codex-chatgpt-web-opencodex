@@ -246,3 +246,36 @@ test("OpenCodex provider discovery is local, V1-only, and retains its 900K compa
   expect(body.models.every(model => model.multi_agent_version === "v1")).toBe(true);
   expect(upstreamCalls).toBe(0);
 });
+
+test("client cancellation is not a catalog failure, including during response body reading", async () => {
+  for (const phase of ["before", "transport", "body"] as const) {
+    const controller = new AbortController();
+    let failures = 0, calls = 0;
+    if (phase === "before") controller.abort();
+    const response = await modelsRequest(new Request("http://127.0.0.1/v1/models", {
+      signal: controller.signal, headers: { authorization: "Bearer fixture" },
+    }), defaultConfig("browser-only"), async () => {
+      calls++;
+      if (phase === "transport") { controller.abort(); throw new DOMException("cancel", "AbortError"); }
+      return new Response(new ReadableStream({ pull(stream) {
+        controller.abort(); stream.error(new DOMException("cancel", "AbortError"));
+      } }));
+    }, undefined, () => { failures++; });
+    expect(response.status).toBe(499);
+    expect(failures).toBe(0);
+    expect(calls).toBe(phase === "before" ? 0 : 1);
+  }
+});
+
+test("a server cancellation remains a failure when the client is still connected", async () => {
+  const server = new AbortController();
+  const client = new AbortController();
+  let failure: unknown;
+  const response = await modelsRequest(new Request("http://127.0.0.1/v1/models", {
+    signal: server.signal, headers: { authorization: "Bearer fixture" },
+  }), defaultConfig("browser-only"), async () => {
+    server.abort(); throw new DOMException("server cancellation", "AbortError");
+  }, undefined, value => { failure = value; }, client.signal);
+  expect(response.status).toBe(502);
+  expect(failure).toEqual({ stage: "transport", code: "ABORT_ERR" });
+});

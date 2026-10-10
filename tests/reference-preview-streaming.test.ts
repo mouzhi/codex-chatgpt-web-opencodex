@@ -64,10 +64,10 @@ test("reference hydration keeps the final download link and title without stream
     document => { document.getElementById("reference")!.innerHTML = '<span class="group/resource-row"><a href="https://example.com/report">Download report</a></span>'; },
   ]);
   const buffer = new ChatGptMarkdownBuffer(undefined, 0);
-  for (const [i, snapshot] of snapshots.entries()) expect(buffer.observe(snapshot, i)).toBe("");
+  for (const [i, snapshot] of snapshots.entries()) expect(buffer.observe(snapshot, i)).toBe(i === 0 ? "Intro." : "");
   expect(buffer.finish()).toEqual({
     markdown: "Intro.\n\n[Download report](https://example.com/report)\n\nClosing note.",
-    delta: "Intro.\n\n[Download report](https://example.com/report)\n\nClosing note.",
+    delta: "\n\n[Download report](https://example.com/report)\n\nClosing note.",
   });
 });
 
@@ -77,7 +77,7 @@ test("reference deferral survives removal and root remount without losing plain 
     document => { document.querySelector(".markdown")!.outerHTML = `<div class="markdown"><p>Intro.</p>${reference}<p>Closing note.</p></div>`; },
   ]);
   const buffer = new ChatGptMarkdownBuffer(undefined, 0);
-  for (const [i, snapshot] of snapshots.entries()) expect(buffer.observe(snapshot, i)).toBe("");
+  for (const [i, snapshot] of snapshots.entries()) expect(buffer.observe(snapshot, i)).toBe(i === 0 ? "Intro." : "");
   expect(buffer.finish().markdown).toBe("Intro.\n\nView\n\nClosing note.");
 });
 
