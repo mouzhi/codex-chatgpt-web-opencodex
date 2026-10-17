@@ -48,8 +48,27 @@ export interface BrokerToolResult {
 
 interface PendingInvocation {
   request: BrokerToolRequest;
+  queuedAt: number;
+  deliveredAt?: number;
   resolve: (result: BrokerToolResult) => void;
   reject: (error: Error) => void;
+}
+
+export interface BrokerRetirementDiagnostics {
+  traceId: string;
+  pendingTools: number;
+  queuedTools: number;
+  deliveredTools: number;
+  activeMcpRequests: number;
+  completionCommitted: boolean;
+  pendingCalls: Array<{
+    callRef: string;
+    tool: string;
+    state: "queued" | "delivered";
+    queuedMs: number;
+    awaitingResultMs?: number;
+  }>;
+  omittedPendingCalls: number;
 }
 
 interface ToolWaiter {
@@ -91,6 +110,7 @@ interface TurnChannel {
   compactionRequested: boolean;
   compactionResult?: BrokerToolResult;
   compactionDeliveryCount: number;
+  onCompactionProgress?: () => void;
   safe?: SafeTurnControl;
   /** Every MCP request owns a lease from token claim until its handler has settled. */
   activities: Set<string>;
@@ -160,6 +180,34 @@ interface BrokerResponse {
 const brokers = new Map<string, TurnBroker>();
 const MAX_BROKER_LINE_CHARS = 67_108_864;
 const MAX_RETIRED_TURN_HANDLES = 64;
+const MAX_PENDING_CALL_DIAGNOSTICS = 16;
+
+function retirementDiagnostics(channel: TurnChannel): BrokerRetirementDiagnostics {
+  const now = performance.now();
+  const pendingCalls: BrokerRetirementDiagnostics["pendingCalls"] = [];
+  for (const [callId, invocation] of channel.invocations) {
+    if (pendingCalls.length === MAX_PENDING_CALL_DIAGNOSTICS) break;
+    pendingCalls.push({
+      callRef: callId.slice(0, 17),
+      tool: invocation.request.wireName,
+      state: invocation.deliveredAt === undefined ? "queued" : "delivered",
+      queuedMs: Math.max(0, Math.floor((invocation.deliveredAt ?? now) - invocation.queuedAt)),
+      ...(invocation.deliveredAt === undefined ? {} : {
+        awaitingResultMs: Math.max(0, Math.floor(now - invocation.deliveredAt)),
+      }),
+    });
+  }
+  return {
+    traceId: channel.traceId,
+    pendingTools: channel.invocations.size,
+    queuedTools: channel.queuedCallIds.length,
+    deliveredTools: channel.deliveredCallIds.size,
+    activeMcpRequests: channel.activities.size,
+    completionCommitted: channel.completionCommitted,
+    pendingCalls,
+    omittedPendingCalls: channel.invocations.size - pendingCalls.length,
+  };
+}
 
 export async function closeTurnBrokers(): Promise<void> {
   const active = [...brokers.values()];
@@ -274,7 +322,9 @@ export class TurnBroker implements TurnBrokerOwner {
   // The Codex context replayed into ChatGPT still carries the handles of finished turns, so a model
   // can present one. Remembering which turn retired a handle is what separates "you are holding a
   // previous turn's handle" from "this handle never existed".
-  private readonly retiredBindings = new Map<string, string>();
+  // Keep content-free diagnostics with the existing bounded history so an expiry immediately
+  // before timeout cleanup cannot erase the last observed delivery state.
+  private readonly retiredBindings = new Map<string, BrokerRetirementDiagnostics>();
   private readonly retiredTokens = new Map<string, string>();
   private acceptingExternalOwners = true;
   private server?: Server;
@@ -494,7 +544,7 @@ export class TurnBroker implements TurnBrokerOwner {
     return this.waitForSafeState(channel.retirementWaiters, signal, "turn retirement wait aborted");
   }
 
-  requestCompaction(token: string, queuedResult: BrokerToolResult): number {
+  requestCompaction(token: string, queuedResult: BrokerToolResult, onProgress?: () => void): number {
     this.prune();
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
@@ -504,6 +554,7 @@ export class TurnBroker implements TurnBrokerOwner {
     }
     channel.compactionRequested = true;
     channel.compactionResult = structuredClone(queuedResult);
+    channel.onCompactionProgress = onProgress;
     if (channel.batchTimer) {
       clearTimeout(channel.batchTimer);
       channel.batchTimer = undefined;
@@ -514,6 +565,7 @@ export class TurnBroker implements TurnBrokerOwner {
       if (!invocation) continue;
       channel.invocations.delete(callId);
       channel.compactionDeliveryCount += 1;
+      channel.onCompactionProgress?.();
       invocation.resolve(structuredClone(queuedResult));
     }
     if (queued.length > 0) {
@@ -632,20 +684,16 @@ export class TurnBroker implements TurnBrokerOwner {
   revoke(token: string, reason = new Error("Codex turn binding was revoked"), failure?: BrokerRetirementFailure): void {
     const channel = this.channels.get(token);
     if (!channel) return;
+    const diagnostics = retirementDiagnostics(channel);
     console.info(`[chatgpt-web] broker_retired ${JSON.stringify({
-      traceId: channel.traceId,
-      pendingTools: channel.invocations.size,
-      queuedTools: channel.queuedCallIds.length,
-      deliveredTools: channel.deliveredCallIds.size,
-      activeMcpRequests: channel.activities.size,
-      completionCommitted: channel.completionCommitted,
+      ...diagnostics,
       ...(failure ? { failure } : {}),
     })}`);
     this.channels.delete(token);
     this.pending.delete(token);
     if (channel.bindingId) {
       this.bindings.delete(channel.bindingId);
-      this.retire(this.retiredBindings, channel.bindingId, channel.traceId);
+      this.retire(this.retiredBindings, channel.bindingId, diagnostics);
     }
     if (channel.safe) {
       channel.safe.state = "revoked";
@@ -683,9 +731,9 @@ export class TurnBroker implements TurnBrokerOwner {
     this.acceptingExternalOwners = accepted;
   }
 
-  private retire(history: Map<string, string>, handle: string, traceId: string): void {
+  private retire<T>(history: Map<string, T>, handle: string, value: T): void {
     history.delete(handle);
-    history.set(handle, traceId);
+    history.set(handle, value);
     while (history.size > MAX_RETIRED_TURN_HANDLES) {
       const oldest = history.keys().next();
       if (oldest.done) return;
@@ -1142,14 +1190,17 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!binding) {
       const retiredTurn = this.retiredBindings.get(bindingId);
       if (request.method === "release" && retiredTurn !== undefined) {
-        return { released: true, duplicate: true };
+        if (request.failure !== undefined) assertRetirementFailure(request.failure);
+        return { released: true, duplicate: true,
+          ...(request.failure === undefined ? {} : { diagnostics: retiredTurn }),
+        };
       }
       console.error(
         `[chatgpt-web] broker rejected ${request.method} (binding=${bindingId.slice(0, 17)},`
-        + ` retiredTurn=${retiredTurn ?? "unknown"})`,
+        + ` retiredTurn=${retiredTurn?.traceId ?? "unknown"})`,
       );
       throw new Error(retiredTurn !== undefined
-        ? `${retiredTurnLabel(retiredTurn)} has already finished; this Codex Native action can no longer run.`
+        ? `${retiredTurnLabel(retiredTurn.traceId)} has already finished; this Codex Native action can no longer run.`
         : "internal Codex turn binding is invalid or expired");
     }
     if (request.method === "release") {
@@ -1159,7 +1210,9 @@ export class TurnBroker implements TurnBrokerOwner {
       } else {
         this.revoke(binding.token);
       }
-      return { released: true };
+      return { released: true,
+        ...(request.failure === undefined ? {} : { diagnostics: this.retiredBindings.get(bindingId)! }),
+      };
     }
     if (request.method === "resolve") return { environment: binding.channel.environment };
     this.assertSafeHarnessRunning(binding.channel);
@@ -1167,6 +1220,7 @@ export class TurnBroker implements TurnBrokerOwner {
       const result = binding.channel.compactionResult;
       if (!result) throw new Error("Codex context compaction control result is unavailable");
       binding.channel.compactionDeliveryCount += 1;
+      binding.channel.onCompactionProgress?.();
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} intercepted a post-compaction MCP call`,
       );
@@ -1185,7 +1239,9 @@ export class TurnBroker implements TurnBrokerOwner {
       }),
     };
     return new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
-      binding.channel.invocations.set(callId, { request: toolRequest, resolve: resolveInvoke, reject: rejectInvoke });
+      binding.channel.invocations.set(callId, {
+        request: toolRequest, queuedAt: performance.now(), resolve: resolveInvoke, reject: rejectInvoke,
+      });
       binding.channel.queuedCallIds.push(callId);
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
@@ -1201,7 +1257,11 @@ export class TurnBroker implements TurnBrokerOwner {
   private takeQueued(channel: TurnChannel): BrokerToolRequest[] {
     const ids = channel.queuedCallIds.splice(0);
     for (const id of ids) {
-      if (channel.invocations.has(id)) channel.deliveredCallIds.add(id);
+      const invocation = channel.invocations.get(id);
+      if (invocation) {
+        invocation.deliveredAt = performance.now();
+        channel.deliveredCallIds.add(id);
+      }
     }
     return ids.map(id => channel.invocations.get(id)?.request).filter((request): request is BrokerToolRequest => Boolean(request));
   }
