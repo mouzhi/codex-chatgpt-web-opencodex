@@ -22,6 +22,7 @@ const {
   OPENCODEX_PROVIDER_RUNTIME_PORT,
 } = require("./profile.cjs");
 const { windowsTrustEnvironment } = require("./windows-trust.cjs");
+const { compareVersions } = require("./update.cjs");
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_RUNTIME_LOG_LINE_CHARS = 64 * 1024;
@@ -1395,6 +1396,12 @@ class RuntimeHost {
         && !tunnelProfileMigrationRequired)) {
       return { updated: false };
     }
+    if (compareVersions(currentVersion, existing.config.releaseVersion) < 0) {
+      throw new Error(
+        `This launcher is version ${currentVersion}, but a newer runtime ${existing.config.releaseVersion} is already installed. `
+        + `Open Codex Web GPT ${existing.config.releaseVersion} or newer to continue.`,
+      );
+    }
     const args = [
       "setup",
       existing.mode === "full" ? "--full" : "--browser-only",
@@ -1407,6 +1414,9 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
+    if (interactionMode === "automatic" && existing.config?.autoApproveToolCalls === true) {
+      args.push("--auto-approve-tool-calls");
+    }
     args.push("--preserve-disconnected-route");
     const result = await this.runSetup("runtime-upgrade", args, {
       message: tunnelProfileMigrationRequired

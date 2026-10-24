@@ -66,6 +66,13 @@ test("routed recovery rejects an instruction absent from the current native task
   expect(() => f.resolve()).toThrow();
 });
 
+test("routed fallback cannot infer shared-home ownership from the primary native copy", () => {
+  const first = fixture();
+  const second = fixture();
+  const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, first.home, first.home, [second.home]);
+  expect(() => store.resolve(parseRequest(first.body))).toThrow();
+});
+
 test("routed recovery cannot expand cwd or permission claims beyond the native record", () => {
   for (const mutation of [
     (xml: string, cwd: string) => xml.replace(`<cwd>${cwd}</cwd>`, `<cwd>${join(cwd, "elsewhere")}</cwd>`),
