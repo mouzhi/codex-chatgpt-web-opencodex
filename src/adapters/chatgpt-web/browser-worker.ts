@@ -30,6 +30,7 @@ import {
   type ChatGptMarkdownSegment,
 } from "./markdown";
 import { persistChatGptFinalOutput } from "./final-output";
+import { openChatGptPluginSearchMenu } from "./connector-search-menu";
 import {
   CHATGPT_WEB_LUNA_MODEL_ID,
   CHATGPT_WEB_MODEL_ID,
@@ -3827,6 +3828,7 @@ export class ChatGptBrowserWorker {
       await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
 
       let firstMenuCaptured = false;
+      let pluginSearchAttempted = false;
       while (attemptBudget.triggerAttempts < MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS) {
         attemptBudget.triggerAttempts += 1;
         composer = await this.activeComposer(page, 30_000, abortSignal);
@@ -3853,6 +3855,24 @@ export class ChatGptBrowserWorker {
         } catch (error) {
           if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
           const visibleRows = await this.connectorMentionRowTitles(menuRows, abortSignal);
+          // New ChatGPT layouts search plugins through the add-context popover instead of @.
+          // Try it once only after the legacy trigger exposed no rows. Exact row identity,
+          // keyboard ownership and selected-pill verification remain shared below.
+          if (!pluginSearchAttempted && visibleRows.length === 0) {
+            pluginSearchAttempted = true;
+            if (await openChatGptPluginSearchMenu(composer, this.config.appName, abortSignal)) {
+              try {
+                await appResult.waitFor({ state: "visible", timeout: 2_500, signal: abortSignal });
+              } catch (searchError) {
+                if (!(searchError instanceof Error) || searchError.name !== "TimeoutError") throw searchError;
+                throw chatGptConnectorUnavailableError(
+                  await this.connectorMentionFailure(menuRows, attemptBudget.triggerAttempts, abortSignal),
+                );
+              }
+              await capture("connector-plugin-search-visible");
+              break;
+            }
+          }
           const knownIdentityMismatch = this.config.appName === CHATGPT_CONNECTOR_NAME
             && (
               visibleRows.includes(DEV_CHATGPT_CONNECTOR_NAME)

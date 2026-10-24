@@ -1651,6 +1651,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
     locator: () => ({ filter: () => selectedConnector }),
   };
   const initialComposer = {
+    locator: () => ({ locator: () => ({ filter: () => ({ count: async () => 0 }) }) }),
     fill: async () => { calls.push("clear"); },
     focus: async (_options?: { signal?: AbortSignal }) => { calls.push("focus"); },
     pressSequentially: async (value: string) => {
@@ -1962,6 +1963,7 @@ test("connector catalog refresh stays fail-closed for absent, legacy, and exact 
       return await selectConnector.call({
         config: { appName: CHATGPT_CONNECTOR_NAME },
         activeComposer: async () => ({
+          locator: () => ({ locator: () => ({ filter: () => ({ count: async () => 0 }) }) }),
           fill: async () => {},
           focus: async () => {},
           pressSequentially: async () => {},
