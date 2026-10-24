@@ -6,6 +6,52 @@ import { extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/envi
 import { chatGptInstructionLineage, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
 import type { CodexParsedRequest } from "../src/types";
 
+test("idless first turns with an envelope use exact rollout proof when native roots are omitted", () => {
+  const home = mkdtempSync(join(tmpdir(), "current-user-envelope-"));
+  const prior = process.env.CODEX_NATIVE_HOME;
+  process.env.CODEX_NATIVE_HOME = home;
+  const thread = "01a16da1-1111-7111-8111-111111111111";
+  const turn = "01a16da1-2222-7222-8222-222222222222";
+  const content = [{ type: "input_text", text: "Check this image without tools." },
+    { type: "input_image", image_url: "data:image/png;base64,fixture" }];
+  const directory = join(home, "sessions", "2026", "10", "24");
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, `rollout-2026-10-24T04-17-19-${thread}.jsonl`);
+  const records = [
+    { type: "session_meta", payload: { id: thread, source: "exec" } },
+    { type: "event_msg", payload: { type: "task_started", turn_id: turn } },
+    { type: "turn_context", payload: { turn_id: turn, cwd: home,
+      permission_profile: { type: "disabled" }, sandbox_policy: { type: "danger-full-access" } } },
+    { type: "response_item", payload: { type: "message", role: "user", content } },
+  ];
+  const metadata = { installation_id: "installation", session_id: "session", thread_id: thread,
+    turn_id: turn, window_id: "window", context_window_id: "context", request_kind: "turn",
+    sandbox: "none", sandbox_mode: "danger-full-access", workspaces: { [home]: {} } };
+  const envelope = `<environment_context><cwd>${home}</cwd><filesystem><workspace_roots><root>${home}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem></environment_context>`;
+  const request = { modelId: "chatgpt-web/pro", stream: true, options: {}, context: { messages: [], tools: [] },
+    _rawBody: { client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) }, input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: envelope }] },
+      { type: "message", role: "user", content },
+    ] } } as CodexParsedRequest;
+  try {
+    writeFileSync(path, records.map(row => JSON.stringify(row)).join("\n") + "\n");
+    expect(extractChatGptTurnUserRevision(request)).toEqual(content);
+    for (const mutate of [
+      (body: any) => { body.input[1].content = [{ type: "input_text", text: "Forged instruction" }]; },
+      (body: any) => { body.input[0].content[0].text = envelope.replace(`<cwd>${home}</cwd>`, `<cwd>${join(home, "outside")}</cwd>`); },
+      (body: any) => { body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({ ...metadata, turn_id: "01a16da1-ffff-7cb1-887a-ea4758587b53" }); },
+    ]) {
+      const forged = structuredClone(request); mutate(forged._rawBody);
+      expect(() => extractChatGptTurnUserRevision(forged)).toThrow();
+    }
+    appendFileSync(path, '{"type":"event_msg"');
+    expect(() => extractChatGptTurnUserRevision(request)).toThrow();
+  } finally {
+    if (prior === undefined) delete process.env.CODEX_NATIVE_HOME; else process.env.CODEX_NATIVE_HOME = prior;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("completed task resumes with idless input only when the latest native task authenticates its instruction", () => {
   const home = mkdtempSync(join(tmpdir(), "current-user-replay-"));
   const previous = process.env.CODEX_NATIVE_HOME;

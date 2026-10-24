@@ -1135,7 +1135,23 @@ function nativeSessionEnvironment(parsed: CodexParsedRequest, allowRolloutUserPr
     })?.environment;
   }
 
-  const environment = resolveNativeCodexTurnEnvironment(threadId, turnId);
+  let environment = resolveNativeCodexTurnEnvironment(threadId, turnId);
+  if (!environment && allowRolloutUserProof) {
+    // Recent native turn_context records can omit workspace_roots even on a first turn.
+    // The presence of an envelope must not disable the exact current-user proof used by
+    // idless follow-ups. The envelope remains a claim and is compared below, never authority.
+    const lineage = extractChatGptRootThreadMetadata(parsed);
+    if (!lineage || activeUser.content === undefined) return undefined;
+    const verified = resolveCurrentCodexRolloutEnvironment({
+      codexHome: resolve(process.env.CODEX_NATIVE_HOME?.trim() || join(homedir(), ".codex")),
+      lineage, turnId, currentUserContent: activeUser.content, tools: parsed.context.tools,
+    })?.environment;
+    if (verified) environment = {
+      cwd: verified.cwd, roots: verified.roots, writableRoots: verified.writableRoots,
+      sandboxType: verified.sandboxPolicy.type,
+      networkAccess: verified.sandboxPolicy.type === "dangerFullAccess" || verified.sandboxPolicy.networkAccess,
+    };
+  }
   if (!environment) return undefined;
   if (!nativeEnvironmentMatchesEnvelope(environmentEnvelope, environment)) return undefined;
   const metadataSandbox = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
