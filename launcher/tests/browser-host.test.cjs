@@ -17,7 +17,7 @@ const {
   BrowserHost,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
-  isNormalNewChatUrl,
+  isNewChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
   MANUAL_SUBMIT_TIMEOUT_MS,
@@ -35,7 +35,7 @@ function primaryLoginFixture() {
   let probes = 0;
   const contents = Object.assign(new EventEmitter(), {
     setWindowOpenHandler() {}, isDestroyed: () => false, isLoadingMainFrame: () => true, stop() {},
-    getURL: () => "https://chatgpt.com/?temporary-chat=true",
+    getURL: () => "https://chatgpt.com/",
     loadURL: async url => { loads++; contents.emit("did-start-navigation", {}, url, false, true); },
   });
   const host = Object.assign(Object.create(BrowserHost.prototype), {
@@ -82,7 +82,7 @@ test("nonfatal navigation events are ignored and a clean renderer exit does not 
 
 
 function recoveringRendererFixture() {
-  let url = "https://chatgpt.com/?temporary-chat=true";
+  let url = "https://chatgpt.com/";
   let dead = false;
   let storageClears = 0;
   let completeProbe;
@@ -111,7 +111,7 @@ function recoveringRendererFixture() {
   });
   host.bindWebContents();
   return { host, contents, loads, events, storageClears: () => storageClears,
-    finishProbe: () => completeProbe?.({ sessionAuthenticated: true, temporary: true, composer: true }),
+    finishProbe: () => completeProbe?.({ sessionAuthenticated: true, newChat: true, composer: true }),
     crash: () => { dead = true; contents.emit("render-process-gone", {}, { reason: "killed", exitCode: 9 }); },
   };
 }
@@ -130,7 +130,7 @@ test("a killed primary renderer retires its pending probe, recovers without clea
   assert.equal(host.state.authenticated, true);
   assert.equal(fixture.storageClears(), 0);
   assert.ok(events.includes("browser.renderer_recovered"));
-  contents.executeJavaScript = async () => ({ sessionAuthenticated: false, temporary: true, composer: true, readyState: "complete" });
+  contents.executeJavaScript = async () => ({ sessionAuthenticated: false, newChat: true, composer: true, readyState: "complete" });
   await host.logout();
   assert.equal(host.manualOperation, null);
   assert.equal(host.state.authenticated, false);
@@ -343,7 +343,7 @@ test("primary browser bootstrap fails closed on navigation, renderer, and timeou
   }
 });
 
-function manualTabNavigationFixture(remoteError, chatUrl = "https://chatgpt.com/?temporary-chat=true") {
+function manualTabNavigationFixture(remoteError, chatUrl = "https://chatgpt.com/") {
   const calls = [];
   const logs = [];
   const terminal = [];
@@ -382,7 +382,7 @@ function manualTabNavigationFixture(remoteError, chatUrl = "https://chatgpt.com/
 }
 
 test("manual edit retry survives Electron superseding the ChatGPT navigation", async () => {
-  for (const chatUrl of ["https://chatgpt.com/?temporary-chat=true", "https://chatgpt.com/"]) {
+  for (const chatUrl of ["https://chatgpt.com/", "https://chatgpt.com/"]) {
     const observed = manualTabNavigationFixture(
       new Error(`ERR_ABORTED (-3) loading ${chatUrl}`), chatUrl,
     );
@@ -596,14 +596,12 @@ test("descriptor-owned home surface stays attached offscreen while another launc
   ]);
 });
 
-test("smoke accepts only a fresh normal chat, never a temporary or existing conversation", () => {
-  assert.equal(isNormalNewChatUrl("https://chatgpt.com/"), true);
-  assert.equal(isNormalNewChatUrl("https://chatgpt.com/?temporary-chat=true"), false);
-  assert.equal(isNormalNewChatUrl("https://chatgpt.com/c/abc"), false);
-  assert.equal(isNormalNewChatUrl("https://example.com/"), false);
-  assert.equal(isNormalNewChatUrl("https://chatgpt.com/?temporary-chat=false"), false);
-  assert.equal(isNormalNewChatUrl("https://chatgpt.com/c/abc?temporary-chat=true"), false);
-  assert.equal(isNormalNewChatUrl("not a url"), false);
+test("smoke preserves an already-hydrated ordinary chat page", () => {
+  assert.equal(isNewChatUrl("https://chatgpt.com/"), true);
+  assert.equal(isNewChatUrl("https://chatgpt.com/?temporary-chat=false"), true);
+  assert.equal(isNewChatUrl("https://chatgpt.com/?temporary-chat=true"), false);
+  assert.equal(isNewChatUrl("https://chatgpt.com/c/abc?temporary-chat=true"), false);
+  assert.equal(isNewChatUrl("not a url"), false);
 });
 
 test("session inspection delegates navigation and capability detection to the shared browser helper", async () => {
@@ -612,6 +610,7 @@ test("session inspection delegates navigation and capability detection to the sh
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
     getConnectorName: () => "Codex Native2",
+    getUseTemporaryChats: () => false,
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/" } },
     refreshChatGptHomeDocument: async () => calls.push({ operation: "refresh" }),
@@ -621,7 +620,7 @@ test("session inspection delegates navigation and capability detection to the sh
         type: "result",
         value: {
           authenticated: true,
-          normalChat: true,
+          newChat: true,
           url: "https://chatgpt.com/",
           solAvailable: true,
           extraHighAvailable: true, proAvailable: true,
@@ -634,7 +633,7 @@ test("session inspection delegates navigation and capability detection to the sh
 
   assert.deepEqual(inspected, {
     authenticated: true,
-    normalChat: true,
+    newChat: true,
     url: "https://chatgpt.com/",
     solAvailable: true,
     extraHighAvailable: true, proAvailable: true,
@@ -643,6 +642,7 @@ test("session inspection delegates navigation and capability detection to the sh
   assert.equal(calls[0].operation, "refresh");
   assert.equal(calls[1].operation, "inspect");
   assert.equal(calls[1].appName, "Codex Native2");
+  assert.equal(calls[1].useTemporaryChats, false, "account inspection keeps its ordinary sign-in surface");
   assert.deepEqual(calls[1].payload, { detectCapabilities: true });
 });
 
@@ -656,7 +656,7 @@ test("session inspection fails closed on incomplete shared-helper capability evi
     refreshChatGptHomeDocument: async () => {},
     runBrowserHelperOperation: async () => ({
       type: "result",
-      value: { authenticated: true, normalChat: true, url: "https://chatgpt.com/" },
+      value: { authenticated: true, newChat: true, url: "https://chatgpt.com/" },
     }),
   });
   await assert.rejects(
@@ -908,7 +908,7 @@ test("navigation restores the task viewport at DOM readiness without completing 
   const emulations = [];
   let ownershipMarks = 0;
   const contents = Object.assign(new EventEmitter(), {
-    setWindowOpenHandler() {}, getURL: () => "https://chatgpt.com/?temporary-chat=true",
+    setWindowOpenHandler() {}, getURL: () => "https://chatgpt.com/",
     enableDeviceEmulation: options => emulations.push(options.viewSize),
   });
   const tab = {
@@ -1073,7 +1073,7 @@ test("guest and incomplete server sessions do not prove launcher authentication"
         ...scriptEvents(),
         executeJavaScript: async () => ({
           composer: true,
-          normalChat: true,
+          newChat: true,
           sessionAuthenticated: false,
           readyState: "complete",
         }),
@@ -1101,7 +1101,7 @@ test("launcher authentication is established by the complete server session", as
         ...scriptEvents(),
         executeJavaScript: async () => ({
           composer: true,
-          normalChat: true,
+          newChat: true,
           sessionAuthenticated: true,
           readyState: "complete",
         }),
@@ -1120,7 +1120,7 @@ test("launcher authentication is established by the complete server session", as
 test("a verified session stays signed in while its composer is unavailable", async () => {
   const vm = require("node:vm");
   const { createDocument } = require("@mixmark-io/domino");
-  const url = "https://chatgpt.com/?temporary-chat=true";
+  const url = "https://chatgpt.com/";
   for (const owned of [true, false]) {
     const document = createDocument(`<form ${owned ? "data-chatgpt-composer" : ""}>
       <div data-composer-markdown contenteditable="true" role="textbox"></div></form>`);
@@ -1237,11 +1237,11 @@ test("a turn sign-in redirect updates the launcher and survives stale session pr
     snapshot() { return this.state; },
     syncPowerSaveBlocker() {}, removeTurnTab() {},
     view: { webContents: {
-      isDestroyed: () => false, getURL: () => "https://chatgpt.com/?temporary-chat=true",
+      isDestroyed: () => false, getURL: () => "https://chatgpt.com/",
       ...scriptEvents(),
       executeJavaScript: async () => {
         probes++;
-        return { sessionAuthenticated: true, composer: true, temporary: true, url: "https://chatgpt.com/?temporary-chat=true" };
+        return { sessionAuthenticated: true, composer: true, newChat: true, url: "https://chatgpt.com/" };
       },
     } },
     logger: { warn() {}, info() {} },
@@ -1277,7 +1277,7 @@ test("concurrent authentication probes share the same navigation and allow the n
   let probes = 0;
   let navigations = 0;
   let release;
-  let temporary = false;
+  let newChat = false;
   const ready = new Promise(resolve => { release = resolve; });
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map(),
@@ -1290,9 +1290,9 @@ test("concurrent authentication probes share the same navigation and allow the n
       executeJavaScript: async () => {
         probes += 1;
         await ready;
-        return { composer: true, temporary, sessionAuthenticated: true, url: "https://chatgpt.com/", readyState: "complete" };
+        return { composer: true, newChat, sessionAuthenticated: true, url: "https://chatgpt.com/", readyState: "complete" };
       },
-      loadURL: async () => { navigations += 1; temporary = true; },
+      loadURL: async () => { navigations += 1; newChat = true; },
     } },
     setState(patch) { this.state = { ...this.state, ...patch }; },
     snapshot() { return this.state; }, logger: { info() {} },
@@ -1302,7 +1302,7 @@ test("concurrent authentication probes share the same navigation and allow the n
   release();
   await Promise.all([first, second]);
   assert.equal(navigations, 1);
-  assert.equal(probes, 2); // initial surface, then the one navigated temporary surface
+  assert.equal(probes, 2); // initial surface, then the one navigated new-chat surface
   await fixture.probeAuthentication();
   assert.equal(probes, 3); // the settled operation must not cache stale authentication
 });
@@ -1360,7 +1360,7 @@ test("a later sign-out wins over pending native and page authentication probes",
   let finishNative;
   let finishPage;
   let requests = 0;
-  let url = "https://chatgpt.com/?temporary-chat=true";
+  let url = "https://chatgpt.com/";
   const updates = [];
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     authenticationRevision: 0, state: { authenticated: false },
@@ -1385,7 +1385,7 @@ test("a later sign-out wins over pending native and page authentication probes",
   assert.equal(first, second);
   finishNative({ user: { id: "previous-account" } });
   await second;
-  finishPage({ composer: true, temporary: true, sessionAuthenticated: true });
+  finishPage({ composer: true, newChat: true, sessionAuthenticated: true });
   await page;
   assert.equal(requests, 2);
   assert.equal(updates.length, 1);
@@ -1404,12 +1404,12 @@ test("session changes use the open page after invalidating an older check", asyn
     const fixture = Object.assign(Object.create(BrowserHost.prototype), {
       authenticationRevision: 0, state: { authenticated: false }, turnTabs: new Map(),
       view: { webContents: {
-        getURL: () => "https://chatgpt.com/?temporary-chat=true", isDestroyed: () => false,
+        getURL: () => "https://chatgpt.com/", isDestroyed: () => false,
         ...scriptEvents(),
         executeJavaScript: async () => {
           pageChecks++;
           if (pageChecks === 1) await new Promise(resolve => { finishOld = resolve; });
-          return { composer: true, temporary: true, readyState: "complete", ...result };
+          return { composer: true, newChat: true, readyState: "complete", ...result };
         },
         session: { fetch: async () => { assert.fail("A loaded ChatGPT page owns session verification"); } },
       } },
@@ -1433,12 +1433,12 @@ test("sign-out during a refreshed page check rejects its earlier signed-in resul
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     authenticationRevision: 0, state: { authenticated: false }, turnTabs: new Map(),
     view: { webContents: {
-      getURL: () => "https://chatgpt.com/?temporary-chat=true", isDestroyed: () => false,
+      getURL: () => "https://chatgpt.com/", isDestroyed: () => false,
       ...scriptEvents(),
       executeJavaScript: async () => {
         const check = ++pageChecks;
         if (check === 1) await new Promise(resolve => { finishPage = resolve; });
-        return { sessionAuthenticated: check === 1, readyState: "complete", composer: true, temporary: true };
+        return { sessionAuthenticated: check === 1, readyState: "complete", composer: true, newChat: true };
       },
       session: { fetch: async () => { assert.fail("Must use the loaded page"); } },
     } },
@@ -1550,7 +1550,7 @@ test("choosing passkey during embedded sign-in switches the owned operation inst
     state: { authenticated: false }, manualOperation: null, loginOperation: null,
     turnTabs: new Map(), ready: async () => {}, activateHomeSurface() {}, show() {}, hide() {},
     view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {},
-      getURL: () => "https://chatgpt.com/?temporary-chat=true" } },
+      getURL: () => "https://chatgpt.com/" } },
     logger: { info() {} }, setState(patch) { Object.assign(this.state, patch); },
     snapshot() { return { ...this.state }; },
     probeAuthentication: async () => ({ authenticated: false }),
@@ -1819,7 +1819,7 @@ test("launcher shutdown persists ChatGPT DOM storage and cookies before browser 
   assert.deepEqual(calls, ["storage", "cookies"]);
 });
 
-test("OAuth completion is re-proved on the primary Temporary Chat surface before login succeeds", async () => {
+test("OAuth completion is re-proved on the primary ordinary chat surface before login succeeds", async () => {
   let primaryReady = false;
   const completedAuthView = {
     webContents: {
@@ -1827,7 +1827,7 @@ test("OAuth completion is re-proved on the primary Temporary Chat surface before
       ...scriptEvents(),
       executeJavaScript: async () => ({
         composer: true,
-        normalChat: false,
+        newChat: false,
         sessionAuthenticated: true,
         readyState: "complete",
       }),
@@ -1849,7 +1849,7 @@ test("OAuth completion is re-proved on the primary Temporary Chat surface before
         ...scriptEvents(),
         executeJavaScript: async () => ({
           composer: primaryReady,
-          normalChat: primaryReady,
+          newChat: primaryReady,
           sessionAuthenticated: primaryReady,
           readyState: "complete",
           url: primaryReady
@@ -1878,8 +1878,8 @@ test("OAuth completion is re-proved on the primary Temporary Chat surface before
   assert.equal(result.url, "https://chatgpt.com/");
 });
 
-test("a successful primary login redirect is re-proved on a fresh normal chat before login completes", async () => {
-  let currentUrl = "https://chatgpt.com/c/existing-conversation";
+test("a successful primary login redirect is re-proved on ordinary chat before login completes", async () => {
+  let currentUrl = "https://chatgpt.com/c/after-login";
   const loadedUrls = [];
   const fixture = {
     activeTraceId: null,
@@ -1895,7 +1895,7 @@ test("a successful primary login redirect is re-proved on a fresh normal chat be
         ...scriptEvents(),
         executeJavaScript: async () => ({
           composer: true,
-          normalChat: currentUrl === "https://chatgpt.com/",
+          newChat: currentUrl === "https://chatgpt.com/",
           sessionAuthenticated: true,
           readyState: "complete",
           url: currentUrl,
@@ -1924,7 +1924,7 @@ test("an authenticated primary surface closes a stale embedded auth popup", asyn
       ...scriptEvents(),
       executeJavaScript: async () => ({
         composer: false,
-        normalChat: false,
+        newChat: false,
         sessionAuthenticated: false,
         readyState: "complete",
       }),
@@ -1944,7 +1944,7 @@ test("an authenticated primary surface closes a stale embedded auth popup", asyn
         ...scriptEvents(),
         executeJavaScript: async () => ({
           composer: true,
-          normalChat: true,
+          newChat: true,
           sessionAuthenticated: true,
           readyState: "complete",
           url: "https://chatgpt.com/",
@@ -2075,6 +2075,7 @@ test("launcher delegates every ChatGPT model and turn operation to the shared br
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
     getConnectorName: () => "Codex Native2",
+    getUseTemporaryChats: () => false,
     logger: { info: (...args) => calls.push(["log", ...args]) },
     show: () => calls.push(["show"]),
     waitForSurfaceReady: async () => calls.push(["ready"]),
@@ -2109,7 +2110,7 @@ test("browser helper operations fail closed when the configured connector name i
   assert.equal(helperCalls, 0);
 });
 
-for (const useSavedChats of [false, true]) test(`hidden connector verification uses the selected chat mode (${useSavedChats}) without selecting effort`, async () => {
+for (const useTemporaryChats of [false, true]) test(`hidden connector verification follows the selected chat mode (${useTemporaryChats}) without selecting effort`, async () => {
   const calls = [];
   const fixture = {
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
@@ -2117,8 +2118,8 @@ for (const useSavedChats of [false, true]) test(`hidden connector verification u
     logger: { info: (event, detail) => calls.push(["log", event, detail]) },
     setState: (patch) => calls.push(["state", patch]),
     show: () => calls.push(["show"]),
-    getUseSavedChats: () => useSavedChats,
-    refreshChatGptHomeDocument: async (saved) => calls.push(["refresh", saved]),
+    refreshChatGptHomeDocument: async temporary => calls.push(["refresh", temporary]),
+    getUseTemporaryChats: () => useTemporaryChats,
     selectHighEffort: async () => {
       throw new Error("connector verification must not select an effort");
     },
@@ -2135,22 +2136,22 @@ for (const useSavedChats of [false, true]) test(`hidden connector verification u
   assert.deepEqual(
     calls.filter(([type]) => ["refresh", "helper"].includes(type)),
     [
-      ["refresh", useSavedChats],
+      ["refresh", useTemporaryChats],
       ["helper", {
         helper: fixture.helper,
         descriptorPath: fixture.descriptorPath,
         appName: "Codex Native2",
-        useSavedChats,
+        useTemporaryChats,
         logger: fixture.logger,
       }],
     ],
   );
 });
 
-for (const useSavedChats of [false, true]) test(`verification refresh and authentication preserve the selected chat mode (${useSavedChats})`, async () => {
-  const target = useSavedChats ? "https://chatgpt.com/" : "https://chatgpt.com/?temporary-chat=true";
-  for (const initial of [target, "https://chatgpt.com/c/existing", "about:blank",
-    useSavedChats ? "https://chatgpt.com/?temporary-chat=true" : "https://chatgpt.com/"]) {
+for (const useTemporaryChats of [false, true]) test(`verification refresh authenticates the selected new chat (${useTemporaryChats})`, async () => {
+  const target = useTemporaryChats ? "https://chatgpt.com/?temporary-chat=true" : "https://chatgpt.com/";
+  for (const initial of ["https://chatgpt.com/", "https://chatgpt.com/c/existing", "about:blank",
+    "https://chatgpt.com/?temporary-chat=true"]) {
     const calls = [];
     let currentUrl = initial;
     const fixture = Object.assign(Object.create(BrowserHost.prototype), {
@@ -2163,17 +2164,53 @@ for (const useSavedChats of [false, true]) test(`verification refresh and authen
         loadURL: async (url) => { currentUrl = url; calls.push(["navigate", url]); },
         executeJavaScript: async () => {
           calls.push(["authenticate"]);
-          return { sessionAuthenticated: true, composer: true, temporary: !useSavedChats,
+          return { sessionAuthenticated: true, composer: true, newChat: true,
             url: currentUrl, readyState: "complete" };
         },
       } },
       hardRefreshHome: async () => calls.push(["refresh"]),
     });
-    await fixture.refreshChatGptHomeDocument(useSavedChats);
+    await fixture.refreshChatGptHomeDocument(useTemporaryChats);
     assert.deepEqual(calls, [initial === target ? ["refresh"] : ["navigate", target], ["authenticate"]]);
     assert.equal(fixture.state.authenticated, true);
     assert.equal(currentUrl, target);
   }
+});
+
+test("connector verification records a pre-helper navigation abort once and releases its operation", async () => {
+  const records = [];
+  let helperCalls = 0;
+  const failure = Object.assign(new Error("(-3) loading 'https://chatgpt.com/'"), { code: "ERR_ABORTED", errno: -3 });
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    ready: async () => {}, activateHomeSurface() {},
+    state: {}, turnTabs: new Map(), manualOperation: null,
+    getUseTemporaryChats: () => false,
+    setState(patch) { Object.assign(this.state, patch); },
+    view: { webContents: {
+      getURL: () => "about:blank", isDestroyed: () => false, setBackgroundThrottling() {},
+      loadURL: async () => {
+        assert.equal(fixture.manualOperation, "connector verification");
+        throw failure;
+      },
+    } },
+    logger: {
+      info: (event, detail) => records.push(["info", event, detail]),
+      error: (event, detail) => records.push(["error", event, detail]),
+    },
+    waitForAuthenticated: async () => { assert.fail("failed navigation must not proceed to authentication"); },
+    verifyConnectorWithBrowserHelper: async () => { helperCalls += 1; },
+  });
+
+  await assert.rejects(fixture.verifyConnector("Codex Native2"), error => error === failure);
+
+  assert.deepEqual(records, [["error", "connector.verification_failed", {
+    appName: "Codex Native2",
+    errorName: failure.name,
+    message: failure.message,
+  }]]);
+  assert.equal(helperCalls, 0);
+  assert.equal(fixture.manualOperation, null);
+  assert.deepEqual(fixture.state, { status: "error", message: failure.message });
 });
 
 test("connector verification records the helper failure in launcher diagnostics", async () => {
@@ -2190,6 +2227,7 @@ test("connector verification records the helper failure in launcher diagnostics"
     },
     setState: (patch) => calls.push(["state", patch]),
     refreshChatGptHomeDocument: async () => calls.push(["refresh"]),
+    getUseTemporaryChats: () => false,
     getUseSavedChats: () => true,
     verifyConnectorWithBrowserHelper: async () => { throw failure; },
   };
@@ -4249,17 +4287,17 @@ test("off-on-off fresh conversation changes retire completed history before it c
   const vm = require("node:vm");
   const { releaseRetainedConversation } = require("../electron/retained-turn-release.cjs");
   const main = fs.readFileSync(resolve(__dirname, "../electron/main.cjs"), "utf8");
-  for (const savedChats of [false, true]) {
-    const property = savedChats ? "useSavedChats" : "experimentalFreshConversationPerTurn";
-    const method = savedChats ? "setUseSavedChats" : "setFreshConversationPerTurn";
-    const channel = savedChats ? "launcher:use-saved-chats" : "launcher:fresh-conversation-per-turn";
-    const nextChannel = savedChats ? "launcher:auto-approve-tool-calls" : "launcher:use-saved-chats";
+  {
+    const property = "experimentalFreshConversationPerTurn";
+    const method = "setFreshConversationPerTurn";
+    const channel = "launcher:fresh-conversation-per-turn";
+    const nextChannel = "launcher:temporary-chats";
     const key = "a".repeat(64);
     const stale = { id: "old-chat", traceId: "old-turn", status: "ready", interactionMode: "automatic",
       conversationKey: key, connectorIdentity: "Codex Native2", connectorBound: true };
     const manual = { id: "manual-chat", status: "ready", interactionMode: "manual", conversationKey: "b".repeat(64) };
-    const state = { experimentalFreshConversationPerTurn: false, useSavedChats: false };
-    const config = { experimentalFreshConversationPerTurn: false, useSavedChats: false };
+    const state = { experimentalFreshConversationPerTurn: false, useTemporaryChats: false };
+    const config = { experimentalFreshConversationPerTurn: false, useTemporaryChats: false };
     let handler, failSetup = true, commit;
     const removed = [];
     const fixture = Object.assign(Object.create(BrowserHost.prototype), {
@@ -4296,9 +4334,9 @@ test("off-on-off fresh conversation changes retire completed history before it c
     fixture.turnTabs.set(running.id, running);
     commit();
     await enabling;
-    assert.deepEqual(removed, savedChats ? [stale.id, manual.id] : [stale.id]);
+    assert.deepEqual(removed, [stale.id]);
     assert.equal(fixture.turnTabs.get(running.id), running);
-    assert.equal(fixture.turnTabs.get(manual.id), savedChats ? undefined : manual);
+    assert.equal(fixture.turnTabs.get(manual.id), manual);
     fixture.turnTabs.delete(running.id);
     const disabling = handler(null, false);
     commit();
@@ -4307,6 +4345,6 @@ test("off-on-off fresh conversation changes retire completed history before it c
     assert.equal(lease.reused, false);
     assert.equal(lease.tabId, "new-chat");
     assert.equal(state[property], false);
-    assert.equal(fixture.turnTabs.get(manual.id), savedChats ? undefined : manual);
+    assert.equal(fixture.turnTabs.get(manual.id), manual);
   }
 });

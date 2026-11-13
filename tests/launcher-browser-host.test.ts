@@ -374,7 +374,7 @@ test("launcher session verification uses the authenticated control channel inste
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
       authenticated: true,
-      normalChat: true,
+      newChat: true,
       solAvailable: true,
       extraHighAvailable: true, proAvailable: true,
       url: "https://chatgpt.com/",

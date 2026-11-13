@@ -31,12 +31,19 @@ test("pre-6 provider configs keep regular chats unless explicitly switched off",
   config.browserHostDescriptorPath = join(root, "runtime", "launcher-browser.json");
   const oldShape = JSON.parse(JSON.stringify(config));
   delete oldShape.useSavedChats;
+  delete oldShape.useTemporaryChats;
   writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
-  expect(loadConfig().useSavedChats).toBe(true);
-  expect(providerConfig(loadConfig()).chatgptWeb?.useSavedChats).toBe(true);
+  expect(loadConfig().useTemporaryChats).toBe(false);
+  expect(providerConfig(loadConfig()).chatgptWeb?.useTemporaryChats).toBe(false);
   oldShape.useSavedChats = false;
   writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
-  expect(loadConfig().useSavedChats).toBe(false);
+  expect(loadConfig().useTemporaryChats).toBe(true);
+  oldShape.useSavedChats = true;
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
+  expect(loadConfig().useTemporaryChats).toBe(false);
+  oldShape.useTemporaryChats = true;
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(oldShape)}\n`);
+  expect(loadConfig().useTemporaryChats).toBe(true);
 });
 
 afterEach(() => {

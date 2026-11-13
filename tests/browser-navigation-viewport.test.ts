@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 
 type Preparation = {
-  prepareChatSurface(page: unknown, capture?: (checkpoint: string) => Promise<void>, saved?: boolean, signal?: AbortSignal): Promise<unknown>;
+  prepareChatSurface(page: unknown, capture?: (checkpoint: string) => Promise<void>, signal?: AbortSignal): Promise<unknown>;
 };
 const prepare = (ChatGptBrowserWorker.prototype as unknown as Preparation).prepareChatSurface;
 
@@ -28,12 +28,12 @@ test("normal-chat navigation waits for the restored viewport before probing the 
       events.push("native-viewport-restored");
     },
   };
-  const fixture = { activeComposer: async () => {
+  const fixture = { config: { useTemporaryChats: false }, activeComposer: async () => {
     if (!width || !height) throw new Error("locator.click: Element is outside of the viewport");
     events.push("composer");
     throw reachedComposer;
   } };
-  await expect(prepare.call(fixture, page, async () => { events.push("diagnostic"); }, true)).rejects.toBe(reachedComposer);
+  await expect(prepare.call(fixture, page, async () => { events.push("diagnostic"); })).rejects.toBe(reachedComposer);
   expect(events).toEqual(["dom-ready", "viewport-barrier", "native-viewport-restored", "diagnostic", "composer"]);
 });
 
@@ -43,7 +43,7 @@ test("a viewport that never recovers fails before any model/composer activation"
     url: () => "about:blank", goto: async () => {},
     waitForFunction: async () => { throw new Error("fixture viewport remained 0x0"); },
   };
-  await expect(prepare.call({activeComposer: async () => { composerCalls++; }},page,undefined,true))
+  await expect(prepare.call({config: { useTemporaryChats: false },activeComposer: async () => { composerCalls++; }},page))
     .rejects.toThrow("ChatGPT browser surface did not expose an operational viewport");
   expect(composerCalls).toBe(0);
 });
@@ -55,7 +55,7 @@ test("an already navigated/reloaded home page still revalidates its viewport", a
     url: () => "https://chatgpt.com/", goto: async () => { throw new Error("must not navigate twice"); },
     waitForFunction: async () => { checked = true; },
   };
-  await expect(prepare.call({activeComposer: async () => { expect(checked).toBeTrue(); throw stop; }},page,undefined,true))
+  await expect(prepare.call({config: { useTemporaryChats: false },activeComposer: async () => { expect(checked).toBeTrue(); throw stop; }},page))
     .rejects.toBe(stop);
 });
 
@@ -66,7 +66,7 @@ test("cancellation during navigation never proceeds to composer activation", asy
     url: () => "about:blank", goto: async () => { abort.abort(); },
     waitForFunction: () => new Promise(() => {}),
   };
-  await expect(prepare.call({activeComposer: async () => { composerCalls++; }},page,undefined,true,abort.signal))
+  await expect(prepare.call({config: { useTemporaryChats: false },activeComposer: async () => { composerCalls++; }},page,undefined,abort.signal))
     .rejects.toMatchObject({name:"AbortError"});
   expect(composerCalls).toBe(0);
 });

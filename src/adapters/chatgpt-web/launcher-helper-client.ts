@@ -279,7 +279,7 @@ export class LauncherBrowserHelperClient {
             preserveTerminalPage: this.config.preserveTerminalPage,
             turnTimeoutMs: this.config.turnTimeoutMs,
             autoApproveToolCalls: this.config.autoApproveToolCalls,
-            useSavedChats: this.config.useSavedChats,
+            useTemporaryChats: this.config.useTemporaryChats,
           },
           turn: {
             traceId: turn.traceId,
@@ -537,6 +537,7 @@ export class LauncherBrowserHelperClient {
                 ...(prepared.turnToken ? { turnToken: prepared.turnToken } : {}),
                 ...(prepared.skillFiles ? { skillFiles: prepared.skillFiles } : {}),
                 ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
+                ...(prepared.contextTokenBreakdown ? { contextTokenBreakdown: prepared.contextTokenBreakdown } : {}),
                 ...(prepared.trimmedCompactionMessages !== undefined
                   ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }
                   : {}),
